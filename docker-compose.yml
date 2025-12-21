@@ -1,0 +1,6 @@
+services:
+  web:
+    image: nginx:1.21.6
+  db:
+    image: postgres:14.2
+    container_name: my-postgres
