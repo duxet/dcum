@@ -1,7 +1,6 @@
 package ui
 
 import (
-	"fmt"
 	"path/filepath"
 
 	"github.com/duxet/dcum/internal/compose"
@@ -39,7 +38,7 @@ func (r *Root) Render(images []compose.ContainerImage) error {
 			SetSelectable(false).
 			SetAlign(tview.AlignCenter).
 			SetExpansion(1)
-		
+
 		// "File" column might need more space or less priority, but expansion 1 is fine for now
 		if header == "File" {
 			cell.SetExpansion(2)
@@ -54,9 +53,9 @@ func (r *Root) Render(images []compose.ContainerImage) error {
 		r.table.SetCell(row, 0, tview.NewTableCell(img.ServiceName).SetTextColor(tcell.ColorWhite))
 		r.table.SetCell(row, 1, tview.NewTableCell(img.ContainerName).SetTextColor(tcell.ColorWhite))
 		r.table.SetCell(row, 2, tview.NewTableCell(img.ImageName).SetTextColor(tcell.ColorGreen))
-		r.table.SetCell(row, 3, tview.NewTableCell(img.CurrentVersion).SetTextColor(tcell.ColorCyan).SetAlign(tview.AlignCenter))
+		r.table.SetCell(row, 3, tview.NewTableCell(img.CurrentVersion).SetTextColor(tcell.ColorBlue).SetAlign(tview.AlignCenter))
 		r.table.SetCell(row, 4, tview.NewTableCell("").SetTextColor(tcell.ColorGray).SetAlign(tview.AlignCenter)) // New Version placeholder
-		
+
 		// Show relative path for file if possible
 		relPath := img.FilePath
 		if wd, err := filepath.Abs("."); err == nil {
@@ -68,7 +67,7 @@ func (r *Root) Render(images []compose.ContainerImage) error {
 	}
 
 	r.app.SetRoot(r.table, true).EnableMouse(true)
-	
+
 	// Add 'q' to quit
 	r.app.SetInputCapture(func(event *tcell.EventKey) *tcell.EventKey {
 		if event.Rune() == 'q' {
