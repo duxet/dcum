@@ -5,13 +5,15 @@ import (
 	"os"
 
 	"github.com/duxet/dcum/internal/compose"
+	"github.com/duxet/dcum/internal/registry"
 	"github.com/duxet/dcum/internal/ui"
 )
 
 // Run initializes and starts the application.
 func Run() error {
 	scanner := compose.NewScanner()
-	
+	checker := registry.NewChecker()
+
 	// Start scanning from current directory
 	wd, err := os.Getwd()
 	if err != nil {
@@ -26,11 +28,20 @@ func Run() error {
 
 	if len(images) == 0 {
 		fmt.Println("No docker-compose files found or no images found in them.")
-		// We can still open the UI or just exit. 
-		// For better UX, let's open UI but it will be empty.
-		// Or maybe just tell the user. 
-		// Let's print a message and exit for now, or just show empty table.
-		// showing empty table is better for continuity.
+	} else {
+		fmt.Println("Checking for updates...")
+		for i := range images {
+			fmt.Printf("Checking %s:%s...\n", images[i].ImageName, images[i].CurrentVersion)
+			newVer, err := checker.GetLatestVersion(images[i].ImageName, images[i].CurrentVersion)
+			if err != nil {
+				// Log error but continue
+				fmt.Fprintf(os.Stderr, "Failed to check %s: %v\n", images[i].ImageName, err)
+				continue
+			}
+			if newVer != "" {
+				images[i].NewVersion = newVer
+			}
+		}
 	}
 
 	appUI := ui.NewRoot()

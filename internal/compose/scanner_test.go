@@ -8,7 +8,7 @@ import (
 func TestScanner_Scan(t *testing.T) {
 	s := NewScanner()
 	wd, _ := filepath.Abs("../../") // Go to root of repo
-	
+
 	images, err := s.Scan(wd)
 	if err != nil {
 		t.Fatalf("Scan failed: %v", err)

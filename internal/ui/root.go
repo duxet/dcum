@@ -54,7 +54,16 @@ func (r *Root) Render(images []compose.ContainerImage) error {
 		r.table.SetCell(row, 1, tview.NewTableCell(img.ContainerName).SetTextColor(tcell.ColorWhite))
 		r.table.SetCell(row, 2, tview.NewTableCell(img.ImageName).SetTextColor(tcell.ColorGreen))
 		r.table.SetCell(row, 3, tview.NewTableCell(img.CurrentVersion).SetTextColor(tcell.ColorBlue).SetAlign(tview.AlignCenter))
-		r.table.SetCell(row, 4, tview.NewTableCell("").SetTextColor(tcell.ColorGray).SetAlign(tview.AlignCenter)) // New Version placeholder
+
+		newVerText := img.NewVersion
+		newVerColor := tcell.ColorGray
+		if newVerText != "" {
+			newVerColor = tcell.ColorGreen
+		} else {
+			newVerText = "-"
+		}
+
+		r.table.SetCell(row, 4, tview.NewTableCell(newVerText).SetTextColor(newVerColor).SetAlign(tview.AlignCenter))
 
 		// Show relative path for file if possible
 		relPath := img.FilePath
