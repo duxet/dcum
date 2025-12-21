@@ -4,3 +4,12 @@ services:
   db:
     image: postgres:14.2
     container_name: my-postgres
+  redis:
+    image: redis:8.0.0-alpine
+    labels:
+      - 'wud.tag.include=^\d+\.\d+\.\d+-alpine$$'
+      - 'wud.link.template=https://github.com/redis/redis/releases/tag/$${major}.$${minor}.$${patch}'
+  mongo:
+    image: docker.io/mongo:4.3.2
+    labels:
+      - 'wud.tag.include=^4\.\d+\.\d+$$'

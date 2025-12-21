@@ -2,6 +2,7 @@ package registry
 
 import (
 	"fmt"
+	"regexp"
 	"sort"
 
 	"github.com/Masterminds/semver/v3"
@@ -24,7 +25,7 @@ type UpdateCandidates struct {
 }
 
 // GetUpdateCandidates returns the latest patch, minor, and major versions for a given image.
-func (c *Checker) GetUpdateCandidates(imageName, currentVersion string) (UpdateCandidates, error) {
+func (c *Checker) GetUpdateCandidates(imageName, currentVersion string, tagRegex string) (UpdateCandidates, error) {
 	var candidates UpdateCandidates
 
 	// Parse current version
@@ -44,13 +45,31 @@ func (c *Checker) GetUpdateCandidates(imageName, currentVersion string) (UpdateC
 		return candidates, fmt.Errorf("listing tags: %w", err)
 	}
 
+	var filters *regexp.Regexp
+	if tagRegex != "" {
+		r, err := regexp.Compile(tagRegex)
+		if err != nil {
+			// If regex is invalid, maybe just ignore or return error?
+			// returning error seems safer.
+			return candidates, fmt.Errorf("invalid regex %s: %w", tagRegex, err)
+		}
+		filters = r
+	}
+
 	var parsedVersions []*semver.Version
 	for _, tag := range tags {
+		if filters != nil && !filters.MatchString(tag) {
+			continue
+		}
+
 		v, err := semver.NewVersion(tag)
 		if err != nil {
 			continue
 		}
-		if v.Prerelease() != "" {
+
+		// If custom regex matches, we should allow pre-releases if they are valid semver
+		// This is because things like "-alpine" might be considered pre-release metadata by semver parser
+		if filters == nil && v.Prerelease() != "" {
 			continue
 		}
 		parsedVersions = append(parsedVersions, v)

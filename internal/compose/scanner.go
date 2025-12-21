@@ -68,6 +68,7 @@ type ContainerImage struct {
 	UpdatePatch    string
 	UpdateMinor    string
 	UpdateMajor    string
+	Labels         map[string]string
 	FilePath       string
 }
 
@@ -159,6 +160,7 @@ func parseComposeFile(path string) ([]ContainerImage, error) {
 			ContainerName:  service.ContainerName,
 			ImageName:      name,
 			CurrentVersion: version,
+			Labels:         service.Labels,
 			FilePath:       path,
 		})
 	}

@@ -32,7 +32,15 @@ func Run() error {
 		fmt.Println("Checking for updates...")
 		for i := range images {
 			fmt.Printf("Checking %s:%s...\n", images[i].ImageName, images[i].CurrentVersion)
-			candidates, err := checker.GetUpdateCandidates(images[i].ImageName, images[i].CurrentVersion)
+
+			tagRegex := ""
+			if images[i].Labels != nil {
+				if val, ok := images[i].Labels["wud.tag.include"]; ok {
+					tagRegex = val
+				}
+			}
+
+			candidates, err := checker.GetUpdateCandidates(images[i].ImageName, images[i].CurrentVersion, tagRegex)
 			if err != nil {
 				// Log error but continue
 				fmt.Fprintf(os.Stderr, "Failed to check %s: %v\n", images[i].ImageName, err)
