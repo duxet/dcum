@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"fmt"
 	"path/filepath"
 
 	"github.com/duxet/dcum/internal/compose"
@@ -43,16 +44,46 @@ func (r *Root) Render(images []compose.ContainerImage) error {
 
 	r.app.SetRoot(r.table, true).EnableMouse(true)
 
-	// Add 'q' to quit
+	// Add 'q' to quit, 's' to save
 	r.app.SetInputCapture(func(event *tcell.EventKey) *tcell.EventKey {
 		if event.Rune() == 'q' {
 			r.app.Stop()
+			return nil
+		}
+		if event.Rune() == 's' {
+			r.saveChanges()
 			return nil
 		}
 		return event
 	})
 
 	return r.app.Run()
+}
+
+func (r *Root) saveChanges() {
+	scanner := compose.NewScanner()
+	if err := scanner.UpdateImages(r.images); err != nil {
+		// Show error modal (simplification: just print to stderr for now or panic?)
+		// To show in TUI needs a valid modal primitive.
+		// Let's print to stdout/stderr which might mess selection but at least logic runs.
+		// Better: Change title of table to show error?
+		r.table.SetTitle(fmt.Sprintf("Error saving: %v", err))
+		return
+	}
+	r.table.SetTitle("Changes saved successfully!")
+
+	// Reload/Reset UI state? modify current versions in memory?
+	for i, img := range r.images {
+		if img.NewVersion != "" {
+			r.images[i].CurrentVersion = img.NewVersion
+			r.images[i].NewVersion = ""
+			r.images[i].UpdatePatch = "" // Clear suggestions as they are invalid now
+			r.images[i].UpdateMinor = ""
+			r.images[i].UpdateMajor = ""
+			// In reality, we should re-scan to get fresh state, but simple update works.
+		}
+	}
+	r.refreshTable()
 }
 
 func (r *Root) cycleVersion(index int) {
