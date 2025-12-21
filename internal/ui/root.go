@@ -10,8 +10,9 @@ import (
 
 // Root represents the UI application.
 type Root struct {
-	app   *tview.Application
-	table *tview.Table
+	app    *tview.Application
+	table  *tview.Table
+	images []compose.ContainerImage
 }
 
 // NewRoot creates a new UI application.
@@ -30,6 +31,74 @@ func NewRoot() *Root {
 
 // Render displays the list of container images in the table.
 func (r *Root) Render(images []compose.ContainerImage) error {
+	r.images = images
+	r.refreshTable()
+
+	r.table.SetSelectedFunc(func(row, column int) {
+		if row > 0 && row <= len(r.images) {
+			r.cycleVersion(row - 1)
+			r.refreshTable()
+		}
+	})
+
+	r.app.SetRoot(r.table, true).EnableMouse(true)
+
+	// Add 'q' to quit
+	r.app.SetInputCapture(func(event *tcell.EventKey) *tcell.EventKey {
+		if event.Rune() == 'q' {
+			r.app.Stop()
+			return nil
+		}
+		return event
+	})
+
+	return r.app.Run()
+}
+
+func (r *Root) cycleVersion(index int) {
+	img := &r.images[index]
+
+	// Cycle: Current (empty NewVersion) -> Patch -> Minor -> Major -> Current...
+	// If any candidate is missing, skip it in the cycle.
+
+	switch img.NewVersion {
+	case "":
+		// Currently no update selected. Try selecting Patch, then Minor, then Major.
+		if img.UpdatePatch != "" {
+			img.NewVersion = img.UpdatePatch
+		} else if img.UpdateMinor != "" {
+			img.NewVersion = img.UpdateMinor
+		} else if img.UpdateMajor != "" {
+			img.NewVersion = img.UpdateMajor
+		}
+	case img.UpdatePatch:
+		// Currently Patch selected. Try Minor, then Major, then None.
+		if img.UpdateMinor != "" {
+			img.NewVersion = img.UpdateMinor
+		} else if img.UpdateMajor != "" {
+			img.NewVersion = img.UpdateMajor
+		} else {
+			img.NewVersion = "" // Reset
+		}
+	case img.UpdateMinor:
+		// Currently Minor selected. Try Major, then None.
+		if img.UpdateMajor != "" {
+			img.NewVersion = img.UpdateMajor
+		} else {
+			img.NewVersion = "" // Reset
+		}
+	case img.UpdateMajor:
+		// Currently Major selected. Go to None.
+		img.NewVersion = ""
+	default:
+		// Unknown state, reset
+		img.NewVersion = ""
+	}
+}
+
+func (r *Root) refreshTable() {
+	r.table.Clear()
+
 	// Set table headers
 	headers := []string{"Service", "Container", "Image", "Current v", "New v", "File"}
 	for i, header := range headers {
@@ -48,7 +117,7 @@ func (r *Root) Render(images []compose.ContainerImage) error {
 	}
 
 	// Populate rows
-	for i, img := range images {
+	for i, img := range r.images {
 		row := i + 1
 		r.table.SetCell(row, 0, tview.NewTableCell(img.ServiceName).SetTextColor(tcell.ColorWhite))
 		r.table.SetCell(row, 1, tview.NewTableCell(img.ContainerName).SetTextColor(tcell.ColorWhite))
@@ -57,10 +126,24 @@ func (r *Root) Render(images []compose.ContainerImage) error {
 
 		newVerText := img.NewVersion
 		newVerColor := tcell.ColorGray
-		if newVerText != "" {
-			newVerColor = tcell.ColorGreen
-		} else {
+
+		// Add indicators
+		if newVerText == "" {
 			newVerText = "-"
+		} else {
+			if newVerText == img.UpdateMajor {
+				newVerText += " (Maj)"
+				newVerColor = tcell.ColorRed
+			} else if newVerText == img.UpdateMinor {
+				newVerText += " (Min)"
+				newVerColor = tcell.ColorYellow
+			} else if newVerText == img.UpdatePatch {
+				newVerText += " (Pat)"
+				newVerColor = tcell.ColorGreen
+			} else {
+				// Should not happen if logic is correct, but fallback
+				newVerColor = tcell.ColorWhite
+			}
 		}
 
 		r.table.SetCell(row, 4, tview.NewTableCell(newVerText).SetTextColor(newVerColor).SetAlign(tview.AlignCenter))
@@ -74,17 +157,4 @@ func (r *Root) Render(images []compose.ContainerImage) error {
 		}
 		r.table.SetCell(row, 5, tview.NewTableCell(relPath).SetTextColor(tcell.ColorBlue))
 	}
-
-	r.app.SetRoot(r.table, true).EnableMouse(true)
-
-	// Add 'q' to quit
-	r.app.SetInputCapture(func(event *tcell.EventKey) *tcell.EventKey {
-		if event.Rune() == 'q' {
-			r.app.Stop()
-			return nil
-		}
-		return event
-	})
-
-	return r.app.Run()
 }

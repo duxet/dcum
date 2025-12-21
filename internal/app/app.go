@@ -32,14 +32,24 @@ func Run() error {
 		fmt.Println("Checking for updates...")
 		for i := range images {
 			fmt.Printf("Checking %s:%s...\n", images[i].ImageName, images[i].CurrentVersion)
-			newVer, err := checker.GetLatestVersion(images[i].ImageName, images[i].CurrentVersion)
+			candidates, err := checker.GetUpdateCandidates(images[i].ImageName, images[i].CurrentVersion)
 			if err != nil {
 				// Log error but continue
 				fmt.Fprintf(os.Stderr, "Failed to check %s: %v\n", images[i].ImageName, err)
 				continue
 			}
-			if newVer != "" {
-				images[i].NewVersion = newVer
+
+			images[i].UpdatePatch = candidates.Patch
+			images[i].UpdateMinor = candidates.Minor
+			images[i].UpdateMajor = candidates.Major
+
+			// Default selection priority: Patch > Minor > Major
+			if candidates.Patch != "" {
+				images[i].NewVersion = candidates.Patch
+			} else if candidates.Minor != "" {
+				images[i].NewVersion = candidates.Minor
+			} else if candidates.Major != "" {
+				images[i].NewVersion = candidates.Major
 			}
 		}
 	}

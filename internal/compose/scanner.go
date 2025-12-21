@@ -17,6 +17,9 @@ type ContainerImage struct {
 	ImageName      string
 	CurrentVersion string
 	NewVersion     string
+	UpdatePatch    string
+	UpdateMinor    string
+	UpdateMajor    string
 	FilePath       string
 }
 
