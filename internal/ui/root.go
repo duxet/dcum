@@ -11,13 +11,22 @@ import (
 	"github.com/rivo/tview"
 )
 
+// CheckState represents the status of an update check.
+type CheckState int
+
+const (
+	CheckStatePending CheckState = iota
+	CheckStateChecking
+	CheckStateDone
+)
+
 // Root represents the UI application.
 type Root struct {
-	app       *tview.Application
-	table     *tview.Table
-	statusBar *tview.TextView
-	images    []compose.ContainerImage
-	checking  map[int]bool // Track which rows are currently being checked
+	app         *tview.Application
+	table       *tview.Table
+	statusBar   *tview.TextView
+	images      []compose.ContainerImage
+	checkStatus map[int]CheckState // Track status of each row
 }
 
 // NewRoot creates a new UI application.
@@ -43,7 +52,7 @@ func NewRoot() *Root {
 // Render displays the list of container images in the table.
 func (r *Root) Render(images []compose.ContainerImage, checker *registry.Checker) error {
 	r.images = images
-	r.checking = make(map[int]bool)
+	r.checkStatus = make(map[int]CheckState)
 
 	// Create layout
 	grid := tview.NewGrid().
@@ -89,6 +98,16 @@ func (r *Root) checkUpdates(checker *registry.Checker) {
 	var wg sync.WaitGroup
 	sem := make(chan struct{}, 5) // Limit concurrency to 5
 
+	// Initialize all as pending first
+	r.app.QueueUpdateDraw(func() {
+		for i := range r.images {
+			if _, ok := r.checkStatus[i]; !ok {
+				r.checkStatus[i] = CheckStatePending
+			}
+		}
+		r.refreshTable()
+	})
+
 	for i := range r.images {
 		wg.Add(1)
 		go func(idx int) {
@@ -98,7 +117,7 @@ func (r *Root) checkUpdates(checker *registry.Checker) {
 
 			// Mark as checking
 			r.app.QueueUpdateDraw(func() {
-				r.checking[idx] = true
+				r.checkStatus[idx] = CheckStateChecking
 				r.refreshTable()
 			})
 
@@ -113,7 +132,7 @@ func (r *Root) checkUpdates(checker *registry.Checker) {
 
 			// Update image data in main thread safe way
 			r.app.QueueUpdateDraw(func() {
-				r.checking[idx] = false
+				r.checkStatus[idx] = CheckStateDone
 				if err != nil {
 					// We could store error state to show in UI
 				} else {
@@ -240,27 +259,32 @@ func (r *Root) refreshTable() {
 		newVerColor := tcell.ColorGray
 
 		// Add indicators
-		if newVerText == "" {
-			newVerText = "-"
-		} else {
-			if newVerText == img.UpdateMajor {
-				newVerText += " (Maj)"
-				newVerColor = tcell.ColorRed
-			} else if newVerText == img.UpdateMinor {
-				newVerText += " (Min)"
-				newVerColor = tcell.ColorYellow
-			} else if newVerText == img.UpdatePatch {
-				newVerText += " (Pat)"
-				newVerColor = tcell.ColorGreen
-			} else {
-				// Should not happen if logic is correct, but fallback
-				newVerColor = tcell.ColorWhite
-			}
-		}
-
-		if r.checking[i] {
+		state, ok := r.checkStatus[i]
+		if !ok || state == CheckStatePending {
+			newVerText = "waiting..."
+			newVerColor = tcell.ColorGray
+		} else if state == CheckStateChecking {
 			newVerText = "checking..."
 			newVerColor = tcell.ColorYellow
+		} else {
+			// CheckStateDone
+			if newVerText == "" {
+				newVerText = "-"
+			} else {
+				if newVerText == img.UpdateMajor {
+					newVerText += " (Maj)"
+					newVerColor = tcell.ColorRed
+				} else if newVerText == img.UpdateMinor {
+					newVerText += " (Min)"
+					newVerColor = tcell.ColorYellow
+				} else if newVerText == img.UpdatePatch {
+					newVerText += " (Pat)"
+					newVerColor = tcell.ColorGreen
+				} else {
+					// Should not happen if logic is correct, but fallback
+					newVerColor = tcell.ColorWhite
+				}
+			}
 		}
 
 		r.table.SetCell(row, 4, tview.NewTableCell(newVerText).SetTextColor(newVerColor).SetAlign(tview.AlignCenter))
