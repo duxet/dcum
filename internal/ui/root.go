@@ -5,15 +5,18 @@ import (
 	"path/filepath"
 
 	"github.com/duxet/dcum/internal/compose"
+	"github.com/duxet/dcum/internal/registry"
 	"github.com/gdamore/tcell/v2"
 	"github.com/rivo/tview"
 )
 
 // Root represents the UI application.
 type Root struct {
-	app    *tview.Application
-	table  *tview.Table
-	images []compose.ContainerImage
+	app       *tview.Application
+	table     *tview.Table
+	statusBar *tview.TextView
+	images    []compose.ContainerImage
+	checking  map[int]bool // Track which rows are currently being checked
 }
 
 // NewRoot creates a new UI application.
@@ -24,16 +27,34 @@ func NewRoot() *Root {
 		SetSelectable(true, false). // Select rows, not columns
 		SetFixed(1, 1)              // Fix header row
 
+	statusBar := tview.NewTextView().
+		SetDynamicColors(true).
+		SetTextAlign(tview.AlignCenter).
+		SetText("Loading...")
+
 	return &Root{
-		app:   app,
-		table: table,
+		app:       app,
+		table:     table,
+		statusBar: statusBar,
 	}
 }
 
 // Render displays the list of container images in the table.
-func (r *Root) Render(images []compose.ContainerImage) error {
+func (r *Root) Render(images []compose.ContainerImage, checker *registry.Checker) error {
 	r.images = images
+	r.checking = make(map[int]bool)
+
+	// Create layout
+	grid := tview.NewGrid().
+		SetRows(0, 1).
+		SetColumns(0).
+		SetBorders(false)
+
+	grid.AddItem(r.table, 0, 0, 1, 1, 0, 0, true)
+	grid.AddItem(r.statusBar, 1, 0, 1, 1, 0, 0, false)
+
 	r.refreshTable()
+	r.updateStatusBar()
 
 	r.table.SetSelectedFunc(func(row, column int) {
 		if row > 0 && row <= len(r.images) {
@@ -42,7 +63,7 @@ func (r *Root) Render(images []compose.ContainerImage) error {
 		}
 	})
 
-	r.app.SetRoot(r.table, true).EnableMouse(true)
+	r.app.SetRoot(grid, true).EnableMouse(true)
 
 	// Add 'q' to quit, 's' to save
 	r.app.SetInputCapture(func(event *tcell.EventKey) *tcell.EventKey {
@@ -57,7 +78,55 @@ func (r *Root) Render(images []compose.ContainerImage) error {
 		return event
 	})
 
+	// Start async check
+	go r.checkUpdates(checker)
+
 	return r.app.Run()
+}
+
+func (r *Root) checkUpdates(checker *registry.Checker) {
+	for i := range r.images {
+		// Mark as checking
+		r.app.QueueUpdateDraw(func() {
+			r.checking[i] = true
+			r.refreshTable()
+		})
+
+		tagRegex := ""
+		if r.images[i].Labels != nil {
+			if val, ok := r.images[i].Labels["wud.tag.include"]; ok {
+				tagRegex = val
+			}
+		}
+
+		candidates, err := checker.GetUpdateCandidates(r.images[i].ImageName, r.images[i].CurrentVersion, tagRegex)
+
+		// Update image data in main thread safe way
+		r.app.QueueUpdateDraw(func() {
+			r.checking[i] = false
+			if err != nil {
+				// We could store error state to show in UI
+			} else {
+				r.images[i].UpdatePatch = candidates.Patch
+				r.images[i].UpdateMinor = candidates.Minor
+				r.images[i].UpdateMajor = candidates.Major
+
+				// Default selection priority: Patch > Minor > Major
+				if candidates.Patch != "" {
+					r.images[i].NewVersion = candidates.Patch
+				} else if candidates.Minor != "" {
+					r.images[i].NewVersion = candidates.Minor
+				} else if candidates.Major != "" {
+					r.images[i].NewVersion = candidates.Major
+				}
+			}
+			r.refreshTable()
+		})
+	}
+}
+
+func (r *Root) updateStatusBar() {
+	r.statusBar.SetText(" [bold]q[::-] Quit | [bold]s[::-] Save Changes | [bold]Enter[::-] Cycle Version | [bold]Up/Down[::-] Navigate")
 }
 
 func (r *Root) saveChanges() {
@@ -175,6 +244,11 @@ func (r *Root) refreshTable() {
 				// Should not happen if logic is correct, but fallback
 				newVerColor = tcell.ColorWhite
 			}
+		}
+
+		if r.checking[i] {
+			newVerText = "checking..."
+			newVerColor = tcell.ColorYellow
 		}
 
 		r.table.SetCell(row, 4, tview.NewTableCell(newVerText).SetTextColor(newVerColor).SetAlign(tview.AlignCenter))
