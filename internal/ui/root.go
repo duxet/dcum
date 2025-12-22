@@ -3,6 +3,7 @@ package ui
 import (
 	"fmt"
 	"path/filepath"
+	"sync"
 
 	"github.com/duxet/dcum/internal/compose"
 	"github.com/duxet/dcum/internal/registry"
@@ -85,44 +86,55 @@ func (r *Root) Render(images []compose.ContainerImage, checker *registry.Checker
 }
 
 func (r *Root) checkUpdates(checker *registry.Checker) {
+	var wg sync.WaitGroup
+	sem := make(chan struct{}, 5) // Limit concurrency to 5
+
 	for i := range r.images {
-		// Mark as checking
-		r.app.QueueUpdateDraw(func() {
-			r.checking[i] = true
-			r.refreshTable()
-		})
+		wg.Add(1)
+		go func(idx int) {
+			defer wg.Done()
+			sem <- struct{}{}
+			defer func() { <-sem }()
 
-		tagRegex := ""
-		if r.images[i].Labels != nil {
-			if val, ok := r.images[i].Labels["wud.tag.include"]; ok {
-				tagRegex = val
-			}
-		}
+			// Mark as checking
+			r.app.QueueUpdateDraw(func() {
+				r.checking[idx] = true
+				r.refreshTable()
+			})
 
-		candidates, err := checker.GetUpdateCandidates(r.images[i].ImageName, r.images[i].CurrentVersion, tagRegex)
-
-		// Update image data in main thread safe way
-		r.app.QueueUpdateDraw(func() {
-			r.checking[i] = false
-			if err != nil {
-				// We could store error state to show in UI
-			} else {
-				r.images[i].UpdatePatch = candidates.Patch
-				r.images[i].UpdateMinor = candidates.Minor
-				r.images[i].UpdateMajor = candidates.Major
-
-				// Default selection priority: Patch > Minor > Major
-				if candidates.Patch != "" {
-					r.images[i].NewVersion = candidates.Patch
-				} else if candidates.Minor != "" {
-					r.images[i].NewVersion = candidates.Minor
-				} else if candidates.Major != "" {
-					r.images[i].NewVersion = candidates.Major
+			tagRegex := ""
+			if r.images[idx].Labels != nil {
+				if val, ok := r.images[idx].Labels["wud.tag.include"]; ok {
+					tagRegex = val
 				}
 			}
-			r.refreshTable()
-		})
+
+			candidates, err := checker.GetUpdateCandidates(r.images[idx].ImageName, r.images[idx].CurrentVersion, tagRegex)
+
+			// Update image data in main thread safe way
+			r.app.QueueUpdateDraw(func() {
+				r.checking[idx] = false
+				if err != nil {
+					// We could store error state to show in UI
+				} else {
+					r.images[idx].UpdatePatch = candidates.Patch
+					r.images[idx].UpdateMinor = candidates.Minor
+					r.images[idx].UpdateMajor = candidates.Major
+
+					// Default selection priority: Patch > Minor > Major
+					if candidates.Patch != "" {
+						r.images[idx].NewVersion = candidates.Patch
+					} else if candidates.Minor != "" {
+						r.images[idx].NewVersion = candidates.Minor
+					} else if candidates.Major != "" {
+						r.images[idx].NewVersion = candidates.Major
+					}
+				}
+				r.refreshTable()
+			})
+		}(i)
 	}
+	wg.Wait()
 }
 
 func (r *Root) updateStatusBar() {
