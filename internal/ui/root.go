@@ -75,7 +75,7 @@ func (r *Root) Render(images []compose.ContainerImage, checker *registry.Checker
 
 	r.app.SetRoot(grid, true).EnableMouse(true)
 
-	// Add 'q' to quit, 's' to save
+	// Add 'q' to quit, 's' to save, 'r' to refresh
 	r.app.SetInputCapture(func(event *tcell.EventKey) *tcell.EventKey {
 		if event.Rune() == 'q' {
 			r.app.Stop()
@@ -85,16 +85,20 @@ func (r *Root) Render(images []compose.ContainerImage, checker *registry.Checker
 			r.saveChanges()
 			return nil
 		}
+		if event.Rune() == 'r' {
+			go r.checkUpdates(checker, true)
+			return nil
+		}
 		return event
 	})
 
 	// Start async check
-	go r.checkUpdates(checker)
+	go r.checkUpdates(checker, false)
 
 	return r.app.Run()
 }
 
-func (r *Root) checkUpdates(checker *registry.Checker) {
+func (r *Root) checkUpdates(checker *registry.Checker, forceRefresh bool) {
 	var wg sync.WaitGroup
 	sem := make(chan struct{}, 5) // Limit concurrency to 5
 
@@ -128,7 +132,7 @@ func (r *Root) checkUpdates(checker *registry.Checker) {
 				}
 			}
 
-			candidates, err := checker.GetUpdateCandidates(r.images[idx].ImageName, r.images[idx].CurrentVersion, tagRegex)
+			candidates, err := checker.GetUpdateCandidates(r.images[idx].ImageName, r.images[idx].CurrentVersion, tagRegex, forceRefresh)
 
 			// Update image data in main thread safe way
 			r.app.QueueUpdateDraw(func() {
@@ -157,7 +161,7 @@ func (r *Root) checkUpdates(checker *registry.Checker) {
 }
 
 func (r *Root) updateStatusBar() {
-	r.statusBar.SetText(" [bold]q[::-] Quit | [bold]s[::-] Save Changes | [bold]Enter[::-] Cycle Version | [bold]Up/Down[::-] Navigate")
+	r.statusBar.SetText(" [bold]q[::-] Quit | [bold]s[::-] Save Changes | [bold]r[::-] Refresh | [bold]Enter[::-] Cycle Version | [bold]Up/Down[::-] Navigate")
 }
 
 func (r *Root) saveChanges() {

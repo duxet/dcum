@@ -1,9 +1,14 @@
 package registry
 
 import (
+	"encoding/json"
 	"fmt"
+	"os"
+	"path/filepath"
 	"regexp"
 	"sort"
+	"sync"
+	"time"
 
 	"github.com/Masterminds/semver/v3"
 	"github.com/google/go-containerregistry/pkg/name"
@@ -11,10 +16,58 @@ import (
 )
 
 // Checker checks for updates in container registries.
-type Checker struct{}
+type Checker struct {
+	cacheMu   sync.Mutex
+	cache     map[string]CachedCandidates
+	cachePath string
+}
+
+type CachedCandidates struct {
+	Candidates UpdateCandidates
+	Timestamp  time.Time
+}
 
 func NewChecker() *Checker {
-	return &Checker{}
+	c := &Checker{
+		cache: make(map[string]CachedCandidates),
+	}
+
+	if cacheDir, err := os.UserCacheDir(); err == nil {
+		dcumCacheDir := filepath.Join(cacheDir, "dcum")
+		if err := os.MkdirAll(dcumCacheDir, 0755); err == nil {
+			c.cachePath = filepath.Join(dcumCacheDir, "registry_cache.json")
+			c.loadCache()
+		}
+	}
+
+	return c
+}
+
+func (c *Checker) loadCache() {
+	if c.cachePath == "" {
+		return
+	}
+	data, err := os.ReadFile(c.cachePath)
+	if err != nil {
+		return // Ignore error, start fresh
+	}
+	var loaded map[string]CachedCandidates
+	if err := json.Unmarshal(data, &loaded); err == nil {
+		c.cache = loaded
+	}
+}
+
+func (c *Checker) saveCache() {
+	if c.cachePath == "" {
+		return
+	}
+	c.cacheMu.Lock()
+	defer c.cacheMu.Unlock()
+
+	data, err := json.MarshalIndent(c.cache, "", "  ")
+	if err == nil {
+		_ = os.WriteFile(c.cachePath, data, 0644)
+	}
 }
 
 // UpdateCandidates holds potential version upgrades.
@@ -25,7 +78,19 @@ type UpdateCandidates struct {
 }
 
 // GetUpdateCandidates returns the latest patch, minor, and major versions for a given image.
-func (c *Checker) GetUpdateCandidates(imageName, currentVersion string, tagRegex string) (UpdateCandidates, error) {
+func (c *Checker) GetUpdateCandidates(imageName, currentVersion string, tagRegex string, forceRefresh bool) (UpdateCandidates, error) {
+	cacheKey := imageName + "|" + currentVersion + "|" + tagRegex
+
+	if !forceRefresh {
+		c.cacheMu.Lock()
+		if val, ok := c.cache[cacheKey]; ok {
+			// Basic validity check? Maybe expiry? For now assume valid until refreshed.
+			c.cacheMu.Unlock()
+			return val.Candidates, nil
+		}
+		c.cacheMu.Unlock()
+	}
+
 	var candidates UpdateCandidates
 
 	// Parse current version
@@ -125,6 +190,20 @@ func (c *Checker) GetUpdateCandidates(imageName, currentVersion string, tagRegex
 	if bestMajor != nil {
 		candidates.Major = bestMajor.Original()
 	}
+
+	c.cacheMu.Lock()
+	c.cache[cacheKey] = CachedCandidates{
+		Candidates: candidates,
+		Timestamp:  time.Now(),
+	}
+	c.cacheMu.Unlock()
+
+	// Save to disk asynchronously/immediately
+	// Since we are inside a goroutine from the UI (mostly), this is fine.
+	// But saving on EVERY update might be heavy if many updates happen at once.
+	// However, mutex protects the map. The saveCache also locks mutex.
+	// We should probably save outside lock.
+	c.saveCache()
 
 	return candidates, nil
 }
