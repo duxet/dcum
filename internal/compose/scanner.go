@@ -33,9 +33,18 @@ func (s *Scanner) UpdateImages(images []ContainerImage) error {
 			// This might be risky if whitespace varies or if same image is used multiple times with different tags (unlikely for exact string match).
 			// Better is to replace the specific instance.
 
-			// Construct old and new strings
-			oldImageStr := fmt.Sprintf("%s:%s", update.ImageName, update.CurrentVersion)
-			newImageStr := fmt.Sprintf("%s:%s", update.ImageName, update.NewVersion)
+			// Construct old and new strings using appropriate separator
+			sep := ":"
+			if strings.HasPrefix(update.CurrentVersion, "sha256:") {
+				sep = "@"
+			}
+			oldImageStr := fmt.Sprintf("%s%s%s", update.ImageName, sep, update.CurrentVersion)
+
+			newSep := ":"
+			if strings.HasPrefix(update.NewVersion, "sha256:") {
+				newSep = "@"
+			}
+			newImageStr := fmt.Sprintf("%s%s%s", update.ImageName, newSep, update.NewVersion)
 
 			// To be safer, we should probably use the line we found initially?
 			// But we didn't store line numbers.
@@ -210,16 +219,35 @@ func parseComposeFile(path string) ([]ContainerImage, error) {
 			continue
 		}
 
-		parts := strings.Split(imageName, ":")
-		name := parts[0]
-		version := "latest"
-		if len(parts) > 1 {
-			version = parts[1]
-		}
+		// Improved parsing for images with tags and digests
+		// Expected formats:
+		// - name
+		// - name:tag
+		// - name@digest
+		// - name:tag@digest
 
-		// Handle images with digest (e.g. @sha256:...) - simplification for now
-		if strings.Contains(version, "@") {
-			// complex parsing, let's keep it simple for now and store what we have
+		name := imageName
+		version := "latest"
+
+		// Handle @digest first
+		if atIdx := strings.Index(imageName, "@"); atIdx != -1 {
+			name = imageName[:atIdx]
+			version = imageName[atIdx+1:] // This is the digest (e.g. sha256:hash)
+
+			// If name still has a tag, we might want to keep it?
+			// Actually, if it has a tag, the full image is name:tag@digest.
+			// Current implementation splits by ':' later to replace.
+			// If we want to support updating these, we need to be careful.
+			// For now, let's treat the part after @ as the version.
+		} else if colonIdx := strings.LastIndex(imageName, ":"); colonIdx != -1 {
+			// Check if the colon is part of a port (e.g. localhost:5000/image)
+			// If there's a slash AFTER the last colon, then it's a port? No, that's impossible.
+			// If there's a slash BEFORE the last colon, we need to check if it's the registry port.
+			lastSlash := strings.LastIndex(imageName, "/")
+			if colonIdx > lastSlash {
+				name = imageName[:colonIdx]
+				version = imageName[colonIdx+1:]
+			}
 		}
 
 		images = append(images, ContainerImage{

@@ -3,6 +3,7 @@ package ui
 import (
 	"fmt"
 	"path/filepath"
+	"strings"
 	"sync"
 
 	"github.com/duxet/dcum/internal/compose"
@@ -257,7 +258,7 @@ func (r *Root) refreshTable() {
 		r.table.SetCell(row, 0, tview.NewTableCell(img.ServiceName).SetTextColor(tcell.ColorWhite))
 		r.table.SetCell(row, 1, tview.NewTableCell(img.ContainerName).SetTextColor(tcell.ColorWhite))
 		r.table.SetCell(row, 2, tview.NewTableCell(img.ImageName).SetTextColor(tcell.ColorGreen))
-		r.table.SetCell(row, 3, tview.NewTableCell(img.CurrentVersion).SetTextColor(tcell.ColorBlue).SetAlign(tview.AlignCenter))
+		r.table.SetCell(row, 3, tview.NewTableCell(truncateVersion(img.CurrentVersion)).SetTextColor(tcell.ColorBlue).SetAlign(tview.AlignCenter))
 
 		newVerText := img.NewVersion
 		newVerColor := tcell.ColorGray
@@ -275,13 +276,19 @@ func (r *Root) refreshTable() {
 			if newVerText == "" {
 				newVerText = "-"
 			} else {
-				if newVerText == img.UpdateMajor {
+				isMaj := newVerText == img.UpdateMajor
+				isMin := newVerText == img.UpdateMinor
+				isPat := newVerText == img.UpdatePatch
+
+				newVerText = truncateVersion(newVerText)
+
+				if isMaj {
 					newVerText += " (Maj)"
 					newVerColor = tcell.ColorRed
-				} else if newVerText == img.UpdateMinor {
+				} else if isMin {
 					newVerText += " (Min)"
 					newVerColor = tcell.ColorYellow
-				} else if newVerText == img.UpdatePatch {
+				} else if isPat {
 					newVerText += " (Pat)"
 					newVerColor = tcell.ColorGreen
 				} else {
@@ -302,4 +309,27 @@ func (r *Root) refreshTable() {
 		}
 		r.table.SetCell(row, 5, tview.NewTableCell(relPath).SetTextColor(tcell.ColorBlue))
 	}
+}
+
+func truncateVersion(v string) string {
+	if strings.HasPrefix(v, "sha256:") {
+		if len(v) > 7+8 {
+			return v[:15]
+		}
+		return v
+	}
+	// If it's a 64 character hex string
+	if len(v) == 64 {
+		isHex := true
+		for _, c := range v {
+			if !((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F')) {
+				isHex = false
+				break
+			}
+		}
+		if isHex {
+			return v[:8]
+		}
+	}
+	return v
 }
