@@ -73,10 +73,14 @@ type ContainerImage struct {
 }
 
 // Scanner scans directories for docker-compose files.
-type Scanner struct{}
+type Scanner struct {
+	excludePatterns []string
+}
 
-func NewScanner() *Scanner {
-	return &Scanner{}
+func NewScanner(excludePatterns []string) *Scanner {
+	return &Scanner{
+		excludePatterns: excludePatterns,
+	}
 }
 
 // Scan walks the directory tree and finds all docker-compose files and their images.
@@ -86,6 +90,20 @@ func (s *Scanner) Scan(rootDir string) ([]ContainerImage, error) {
 	err := filepath.Walk(rootDir, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
 			return err
+		}
+
+		// Get relative path for pattern matching
+		relPath, err := filepath.Rel(rootDir, path)
+		if err != nil {
+			relPath = path
+		}
+
+		// Check if path matches any exclusion pattern
+		if s.shouldExclude(relPath, info.IsDir()) {
+			if info.IsDir() {
+				return filepath.SkipDir
+			}
+			return nil
 		}
 
 		if info.IsDir() {
@@ -109,6 +127,55 @@ func (s *Scanner) Scan(rootDir string) ([]ContainerImage, error) {
 	})
 
 	return images, err
+}
+
+// shouldExclude checks if a path matches any exclusion pattern.
+func (s *Scanner) shouldExclude(path string, isDir bool) bool {
+	for _, pattern := range s.excludePatterns {
+		// For directories, also check with trailing slash
+		if isDir {
+			matched, err := filepath.Match(pattern, path+"/")
+			if err == nil && matched {
+				return true
+			}
+		}
+
+		matched, err := filepath.Match(pattern, path)
+		if err == nil && matched {
+			return true
+		}
+
+		// Also check if any parent directory matches
+		// This handles patterns like "**/node_modules/**"
+		parts := strings.Split(pattern, "/")
+		pathParts := strings.Split(filepath.ToSlash(path), "/")
+
+		// Simple glob matching for ** patterns
+		if len(parts) > 0 {
+			for i := range pathParts {
+				subPath := strings.Join(pathParts[:i+1], "/")
+				matched, err := filepath.Match(pattern, subPath)
+				if err == nil && matched {
+					return true
+				}
+
+				// Handle ** wildcard by checking if pattern contains the path segment
+				for _, part := range parts {
+					if part != "**" && part != "*" {
+						for _, pathPart := range pathParts {
+							if matched, _ := filepath.Match(part, pathPart); matched {
+								// Check if this is part of a ** pattern
+								if strings.Contains(pattern, "**") && strings.Contains(pattern, part) {
+									return true
+								}
+							}
+						}
+					}
+				}
+			}
+		}
+	}
+	return false
 }
 
 func isComposeFile(filename string) bool {

@@ -6,7 +6,7 @@ import (
 )
 
 func TestScanner_Scan(t *testing.T) {
-	s := NewScanner()
+	s := NewScanner([]string{})     // No exclusions for test
 	wd, _ := filepath.Abs("../../") // Go to root of repo
 
 	images, err := s.Scan(wd)

@@ -5,13 +5,20 @@ import (
 	"os"
 
 	"github.com/duxet/dcum/internal/compose"
+	"github.com/duxet/dcum/internal/config"
 	"github.com/duxet/dcum/internal/registry"
 	"github.com/duxet/dcum/internal/ui"
 )
 
 // Run initializes and starts the application.
 func Run() error {
-	scanner := compose.NewScanner()
+	// Load configuration
+	cfg, err := config.Load()
+	if err != nil {
+		return fmt.Errorf("failed to load config: %w", err)
+	}
+
+	scanner := compose.NewScanner(cfg.ExcludePatterns)
 	checker := registry.NewChecker()
 
 	// Start scanning from current directory

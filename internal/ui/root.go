@@ -165,7 +165,7 @@ func (r *Root) updateStatusBar() {
 }
 
 func (r *Root) saveChanges() {
-	scanner := compose.NewScanner()
+	scanner := compose.NewScanner([]string{}) // No exclusion needed for saving
 	if err := scanner.UpdateImages(r.images); err != nil {
 		// Show error modal (simplification: just print to stderr for now or panic?)
 		// To show in TUI needs a valid modal primitive.

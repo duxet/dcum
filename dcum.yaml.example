@@ -1,0 +1,19 @@
+# dcum configuration file
+# Place this file in one of the following locations:
+# - ./dcum.yaml (current directory)
+# - ~/.config/dcum/dcum.yaml
+# - ~/dcum.yaml
+# - /etc/dcum/dcum.yaml
+
+# Patterns for files/directories to exclude from scanning
+# Supports glob patterns
+exclude_patterns:
+  - "**/node_modules/**"
+  - "**/.git/**"
+  - "**/vendor/**"
+  - "**/dist/**"
+  - "**/build/**"
+  - "**/.venv/**"
+  - "**/venv/**"
+  # Add your custom patterns below
+  # - "**/my-custom-dir/**"
