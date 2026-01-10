@@ -12,6 +12,11 @@ import (
 type Config struct {
 	// ExcludePatterns is a list of glob patterns for files/directories to exclude from scanning
 	ExcludePatterns []string `mapstructure:"exclude_patterns"`
+
+	// UI configuration
+	UI struct {
+		ShowContainer bool `mapstructure:"show_container"`
+	} `mapstructure:"ui"`
 }
 
 // Load loads the configuration from file and environment variables.
@@ -39,6 +44,7 @@ func Load() (*Config, error) {
 		"**/.git/**",
 		"**/vendor/**",
 	})
+	viper.SetDefault("ui.show_container", false)
 
 	// Allow environment variables with DCUM_ prefix
 	viper.SetEnvPrefix("DCUM")

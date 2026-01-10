@@ -37,7 +37,7 @@ func Run() error {
 		fmt.Println("No docker-compose files found or no images found in them.")
 	}
 
-	appUI := ui.NewRoot()
+	appUI := ui.NewRoot(cfg)
 
 	// Start UI rendering immediately with found images
 	// We pass the checker to UI so it can run checks asynchronously

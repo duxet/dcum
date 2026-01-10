@@ -7,6 +7,7 @@ import (
 	"sync"
 
 	"github.com/duxet/dcum/internal/compose"
+	"github.com/duxet/dcum/internal/config"
 	"github.com/duxet/dcum/internal/registry"
 	"github.com/gdamore/tcell/v2"
 	"github.com/rivo/tview"
@@ -28,10 +29,11 @@ type Root struct {
 	statusBar   *tview.TextView
 	images      []compose.ContainerImage
 	checkStatus map[int]CheckState // Track status of each row
+	config      *config.Config
 }
 
 // NewRoot creates a new UI application.
-func NewRoot() *Root {
+func NewRoot(cfg *config.Config) *Root {
 	app := tview.NewApplication()
 	table := tview.NewTable().
 		SetBorders(true).
@@ -47,6 +49,7 @@ func NewRoot() *Root {
 		app:       app,
 		table:     table,
 		statusBar: statusBar,
+		config:    cfg,
 	}
 }
 
@@ -235,8 +238,12 @@ func (r *Root) cycleVersion(index int) {
 func (r *Root) refreshTable() {
 	r.table.Clear()
 
-	// Set table headers
-	headers := []string{"Service", "Container", "Image", "Current v", "New v", "File"}
+	// Define columns based on config
+	headers := []string{"File", "Service", "Image", "Current v", "New v"}
+	if r.config.UI.ShowContainer {
+		headers = append(headers, "Container")
+	}
+
 	for i, header := range headers {
 		cell := tview.NewTableCell(header).
 			SetTextColor(tcell.ColorYellow).
@@ -244,7 +251,6 @@ func (r *Root) refreshTable() {
 			SetAlign(tview.AlignCenter).
 			SetExpansion(1)
 
-		// "File" column might need more space or less priority, but expansion 1 is fine for now
 		if header == "File" {
 			cell.SetExpansion(2)
 		}
@@ -255,11 +261,31 @@ func (r *Root) refreshTable() {
 	// Populate rows
 	for i, img := range r.images {
 		row := i + 1
-		r.table.SetCell(row, 0, tview.NewTableCell(img.ServiceName).SetTextColor(tcell.ColorWhite))
-		r.table.SetCell(row, 1, tview.NewTableCell(img.ContainerName).SetTextColor(tcell.ColorWhite))
-		r.table.SetCell(row, 2, tview.NewTableCell(img.ImageName).SetTextColor(tcell.ColorGreen))
-		r.table.SetCell(row, 3, tview.NewTableCell(truncateVersion(img.CurrentVersion)).SetTextColor(tcell.ColorBlue).SetAlign(tview.AlignCenter))
+		col := 0
 
+		// Column 0: File
+		relPath := img.FilePath
+		if wd, err := filepath.Abs("."); err == nil {
+			if rel, err := filepath.Rel(wd, img.FilePath); err == nil {
+				relPath = rel
+			}
+		}
+		r.table.SetCell(row, col, tview.NewTableCell(relPath).SetTextColor(tcell.ColorBlue))
+		col++
+
+		// Column 1: Service
+		r.table.SetCell(row, col, tview.NewTableCell(img.ServiceName).SetTextColor(tcell.ColorWhite))
+		col++
+
+		// Column 2: Image
+		r.table.SetCell(row, col, tview.NewTableCell(img.ImageName).SetTextColor(tcell.ColorGreen))
+		col++
+
+		// Column 3: Current v
+		r.table.SetCell(row, col, tview.NewTableCell(truncateVersion(img.CurrentVersion)).SetTextColor(tcell.ColorBlue).SetAlign(tview.AlignCenter))
+		col++
+
+		// Column 4: New v
 		newVerText := img.NewVersion
 		newVerColor := tcell.ColorGray
 
@@ -292,22 +318,18 @@ func (r *Root) refreshTable() {
 					newVerText += " (Pat)"
 					newVerColor = tcell.ColorGreen
 				} else {
-					// Should not happen if logic is correct, but fallback
 					newVerColor = tcell.ColorWhite
 				}
 			}
 		}
+		r.table.SetCell(row, col, tview.NewTableCell(newVerText).SetTextColor(newVerColor).SetAlign(tview.AlignCenter))
+		col++
 
-		r.table.SetCell(row, 4, tview.NewTableCell(newVerText).SetTextColor(newVerColor).SetAlign(tview.AlignCenter))
-
-		// Show relative path for file if possible
-		relPath := img.FilePath
-		if wd, err := filepath.Abs("."); err == nil {
-			if rel, err := filepath.Rel(wd, img.FilePath); err == nil {
-				relPath = rel
-			}
+		// Optional Column: Container
+		if r.config.UI.ShowContainer {
+			r.table.SetCell(row, col, tview.NewTableCell(img.ContainerName).SetTextColor(tcell.ColorWhite))
+			col++
 		}
-		r.table.SetCell(row, 5, tview.NewTableCell(relPath).SetTextColor(tcell.ColorBlue))
 	}
 }
 
