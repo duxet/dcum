@@ -24,12 +24,14 @@ const (
 
 // Root represents the UI application.
 type Root struct {
-	app         *tview.Application
-	table       *tview.Table
-	statusBar   *tview.TextView
-	images      []compose.ContainerImage
-	checkStatus map[int]CheckState // Track status of each row
-	config      *config.Config
+	app              *tview.Application
+	table            *tview.Table
+	statusBar        *tview.TextView
+	images           []compose.ContainerImage
+	checkStatus      map[int]CheckState // Track status of each row
+	config           *config.Config
+	filterUpdates    bool
+	displayedIndices []int // Maps table row to index in images slice
 }
 
 // NewRoot creates a new UI application.
@@ -46,10 +48,11 @@ func NewRoot(cfg *config.Config) *Root {
 		SetText("Loading...")
 
 	return &Root{
-		app:       app,
-		table:     table,
-		statusBar: statusBar,
-		config:    cfg,
+		app:              app,
+		table:            table,
+		statusBar:        statusBar,
+		config:           cfg,
+		displayedIndices: []int{},
 	}
 }
 
@@ -57,6 +60,12 @@ func NewRoot(cfg *config.Config) *Root {
 func (r *Root) Render(images []compose.ContainerImage, checker *registry.Checker) error {
 	r.images = images
 	r.checkStatus = make(map[int]CheckState)
+
+	// Initialize displayedIndices with all images
+	r.displayedIndices = make([]int, len(r.images))
+	for i := range r.images {
+		r.displayedIndices[i] = i
+	}
 
 	// Create layout
 	grid := tview.NewGrid().
@@ -71,8 +80,8 @@ func (r *Root) Render(images []compose.ContainerImage, checker *registry.Checker
 	r.updateStatusBar()
 
 	r.table.SetSelectedFunc(func(row, column int) {
-		if row > 0 && row <= len(r.images) {
-			r.cycleVersion(row - 1)
+		if row > 0 && row <= len(r.displayedIndices) {
+			r.cycleVersion(r.displayedIndices[row-1])
 			r.refreshTable()
 		}
 	})
@@ -91,6 +100,12 @@ func (r *Root) Render(images []compose.ContainerImage, checker *registry.Checker
 		}
 		if event.Rune() == 'r' {
 			go r.checkUpdates(checker, true)
+			return nil
+		}
+		if event.Rune() == 'u' {
+			r.filterUpdates = !r.filterUpdates
+			r.refreshTable()
+			r.updateStatusBar()
 			return nil
 		}
 		return event
@@ -165,7 +180,7 @@ func (r *Root) checkUpdates(checker *registry.Checker, forceRefresh bool) {
 }
 
 func (r *Root) updateStatusBar() {
-	r.statusBar.SetText(" [bold]q[::-] Quit | [bold]s[::-] Save Changes | [bold]r[::-] Refresh | [bold]Enter[::-] Cycle Version | [bold]Up/Down[::-] Navigate")
+	r.statusBar.SetText(" [bold]q[::-] Quit | [bold]s[::-] Save Changes | [bold]r[::-] Refresh | [bold]u[::-] Toggle Updates Only | [bold]Enter[::-] Cycle Version | [bold]Up/Down[::-] Navigate")
 }
 
 func (r *Root) saveChanges() {
@@ -258,8 +273,20 @@ func (r *Root) refreshTable() {
 		r.table.SetCell(0, i, cell)
 	}
 
-	// Populate rows
+	// Update displayedIndices based on filter
+	r.displayedIndices = []int{}
 	for i, img := range r.images {
+		if r.filterUpdates {
+			if img.UpdatePatch == "" && img.UpdateMinor == "" && img.UpdateMajor == "" {
+				continue
+			}
+		}
+		r.displayedIndices = append(r.displayedIndices, i)
+	}
+
+	// Populate rows
+	for i, idx := range r.displayedIndices {
+		img := r.images[idx]
 		row := i + 1
 		col := 0
 
@@ -290,7 +317,7 @@ func (r *Root) refreshTable() {
 		newVerColor := tcell.ColorGray
 
 		// Add indicators
-		state, ok := r.checkStatus[i]
+		state, ok := r.checkStatus[idx]
 		if !ok || state == CheckStatePending {
 			newVerText = "waiting..."
 			newVerColor = tcell.ColorGray
