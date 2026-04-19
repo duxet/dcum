@@ -78,8 +78,8 @@ type UpdateCandidates struct {
 }
 
 // GetUpdateCandidates returns the latest patch, minor, and major versions for a given image.
-func (c *Checker) GetUpdateCandidates(imageName, currentVersion string, tagRegex string, forceRefresh bool) (UpdateCandidates, error) {
-	cacheKey := imageName + "|" + currentVersion + "|" + tagRegex
+func (c *Checker) GetUpdateCandidates(imageName, currentVersion string, includeRegex string, excludeRegex string, forceRefresh bool) (UpdateCandidates, error) {
+	cacheKey := imageName + "|" + currentVersion + "|" + includeRegex + "|" + excludeRegex
 
 	if !forceRefresh {
 		c.cacheMu.Lock()
@@ -110,20 +110,30 @@ func (c *Checker) GetUpdateCandidates(imageName, currentVersion string, tagRegex
 		return candidates, fmt.Errorf("listing tags: %w", err)
 	}
 
-	var filters *regexp.Regexp
-	if tagRegex != "" {
-		r, err := regexp.Compile(tagRegex)
+	var includeFilter *regexp.Regexp
+	if includeRegex != "" {
+		r, err := regexp.Compile(includeRegex)
 		if err != nil {
-			// If regex is invalid, maybe just ignore or return error?
-			// returning error seems safer.
-			return candidates, fmt.Errorf("invalid regex %s: %w", tagRegex, err)
+			return candidates, fmt.Errorf("invalid include regex %s: %w", includeRegex, err)
 		}
-		filters = r
+		includeFilter = r
+	}
+
+	var excludeFilter *regexp.Regexp
+	if excludeRegex != "" {
+		r, err := regexp.Compile(excludeRegex)
+		if err != nil {
+			return candidates, fmt.Errorf("invalid exclude regex %s: %w", excludeRegex, err)
+		}
+		excludeFilter = r
 	}
 
 	var parsedVersions []*semver.Version
 	for _, tag := range tags {
-		if filters != nil && !filters.MatchString(tag) {
+		if includeFilter != nil && !includeFilter.MatchString(tag) {
+			continue
+		}
+		if excludeFilter != nil && excludeFilter.MatchString(tag) {
 			continue
 		}
 
@@ -134,7 +144,7 @@ func (c *Checker) GetUpdateCandidates(imageName, currentVersion string, tagRegex
 
 		// If custom regex matches, we should allow pre-releases if they are valid semver
 		// This is because things like "-alpine" might be considered pre-release metadata by semver parser
-		if filters == nil && v.Prerelease() != "" {
+		if includeFilter == nil && v.Prerelease() != "" {
 			continue
 		}
 		parsedVersions = append(parsedVersions, v)
