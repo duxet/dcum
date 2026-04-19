@@ -338,12 +338,24 @@ func (r *Root) refreshTable() {
 				if isMaj {
 					newVerText += " (Maj)"
 					newVerColor = tcell.ColorRed
+					if img.UpdateMinor != "" || img.UpdatePatch != "" {
+						newVerText += " ↓"
+					}
 				} else if isMin {
 					newVerText += " (Min)"
 					newVerColor = tcell.ColorYellow
+					if img.UpdateMajor != "" {
+						newVerText += " ↑"
+					}
+					if img.UpdatePatch != "" {
+						newVerText += " ↓"
+					}
 				} else if isPat {
 					newVerText += " (Pat)"
 					newVerColor = tcell.ColorGreen
+					if img.UpdateMajor != "" || img.UpdateMinor != "" {
+						newVerText += " ↑"
+					}
 				} else {
 					newVerColor = tcell.ColorWhite
 				}
