@@ -146,6 +146,7 @@ func (r *Root) checkUpdates(checker *registry.Checker, forceRefresh bool) {
 
 			includeRegex := ""
 			excludeRegex := ""
+			transformExpr := ""
 			if r.images[idx].Labels != nil {
 				if val, ok := r.images[idx].Labels["wud.tag.include"]; ok {
 					includeRegex = val
@@ -153,9 +154,12 @@ func (r *Root) checkUpdates(checker *registry.Checker, forceRefresh bool) {
 				if val, ok := r.images[idx].Labels["wud.tag.exclude"]; ok {
 					excludeRegex = val
 				}
+				if val, ok := r.images[idx].Labels["wud.tag.transform"]; ok {
+					transformExpr = val
+				}
 			}
 
-			candidates, err := checker.GetUpdateCandidates(r.images[idx].ImageName, r.images[idx].CurrentVersion, includeRegex, excludeRegex, forceRefresh)
+			candidates, err := checker.GetUpdateCandidates(r.images[idx].ImageName, r.images[idx].CurrentVersion, includeRegex, excludeRegex, transformExpr, forceRefresh)
 
 			// Update image data in main thread safe way
 			r.app.QueueUpdateDraw(func() {

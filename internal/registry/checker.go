@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -77,14 +78,40 @@ type UpdateCandidates struct {
 	Major string
 }
 
+func applyTransform(tag string, transformExpr string) string {
+	if transformExpr == "" {
+		return tag
+	}
+
+	parts := strings.Split(transformExpr, "=>")
+	if len(parts) != 2 {
+		return tag
+	}
+
+	pattern := strings.TrimSpace(parts[0])
+	replacement := strings.TrimSpace(parts[1])
+
+	// Replace $$ with $
+	replacement = strings.ReplaceAll(replacement, "$$", "$")
+
+	re, err := regexp.Compile(pattern)
+	if err != nil {
+		return tag
+	}
+
+	if re.MatchString(tag) {
+		return re.ReplaceAllString(tag, replacement)
+	}
+	return tag
+}
+
 // GetUpdateCandidates returns the latest patch, minor, and major versions for a given image.
-func (c *Checker) GetUpdateCandidates(imageName, currentVersion string, includeRegex string, excludeRegex string, forceRefresh bool) (UpdateCandidates, error) {
-	cacheKey := imageName + "|" + currentVersion + "|" + includeRegex + "|" + excludeRegex
+func (c *Checker) GetUpdateCandidates(imageName, currentVersion string, includeRegex, excludeRegex, transformExpr string, forceRefresh bool) (UpdateCandidates, error) {
+	cacheKey := imageName + "|" + currentVersion + "|" + includeRegex + "|" + excludeRegex + "|" + transformExpr
 
 	if !forceRefresh {
 		c.cacheMu.Lock()
 		if val, ok := c.cache[cacheKey]; ok {
-			// Basic validity check? Maybe expiry? For now assume valid until refreshed.
 			c.cacheMu.Unlock()
 			return val.Candidates, nil
 		}
@@ -93,8 +120,9 @@ func (c *Checker) GetUpdateCandidates(imageName, currentVersion string, includeR
 
 	var candidates UpdateCandidates
 
-	// Parse current version
-	currentV, err := semver.NewVersion(currentVersion)
+	// Apply transform to current version if specified
+	transformedCurrent := applyTransform(currentVersion, transformExpr)
+	currentV, err := semver.NewVersion(transformedCurrent)
 	if err != nil {
 		return candidates, nil
 	}
@@ -128,7 +156,12 @@ func (c *Checker) GetUpdateCandidates(imageName, currentVersion string, includeR
 		excludeFilter = r
 	}
 
-	var parsedVersions []*semver.Version
+	type versionMapping struct {
+		Original string
+		Parsed   *semver.Version
+	}
+
+	var parsedVersions []versionMapping
 	for _, tag := range tags {
 		if includeFilter != nil && !includeFilter.MatchString(tag) {
 			continue
@@ -137,68 +170,54 @@ func (c *Checker) GetUpdateCandidates(imageName, currentVersion string, includeR
 			continue
 		}
 
-		v, err := semver.NewVersion(tag)
+		transformedTag := applyTransform(tag, transformExpr)
+		v, err := semver.NewVersion(transformedTag)
 		if err != nil {
 			continue
 		}
 
 		// If custom regex matches, we should allow pre-releases if they are valid semver
-		// This is because things like "-alpine" might be considered pre-release metadata by semver parser
 		if includeFilter == nil && v.Prerelease() != "" {
 			continue
 		}
-		parsedVersions = append(parsedVersions, v)
+		parsedVersions = append(parsedVersions, versionMapping{
+			Original: tag,
+			Parsed:   v,
+		})
 	}
 
-	sort.Sort(semver.Collection(parsedVersions))
+	sort.Slice(parsedVersions, func(i, j int) bool {
+		return parsedVersions[i].Parsed.LessThan(parsedVersions[j].Parsed)
+	})
 
-	// Find candidates
+	var bestPatch, bestMinor, bestMajor versionMapping
+	hasPatch, hasMinor, hasMajor := false, false, false
+
 	for _, v := range parsedVersions {
-		if v.LessThan(currentV) || v.Equal(currentV) {
+		if v.Parsed.LessThan(currentV) || v.Parsed.Equal(currentV) {
 			continue
 		}
 
-		if v.Major() > currentV.Major() {
-			candidates.Major = v.Original() // Always take the highest seen so far logic?
-			// Since sorted ascending, the last assignment will be the highest.
-		} else if v.Minor() > currentV.Minor() {
-			candidates.Minor = v.Original()
-		} else if v.Patch() > currentV.Patch() {
-			candidates.Patch = v.Original()
-		}
-	}
-
-	// If we found a major update, but no minor/patch, that's fine.
-	// But usually we want:
-	// Patch: Highest version with same Major.Minor
-	// Minor: Highest version with same Major, but higher Minor
-	// Major: Highest version with higher Major
-
-	// Re-iterate properly to find specific candidates
-	var bestPatch, bestMinor, bestMajor *semver.Version
-
-	for _, v := range parsedVersions {
-		if v.LessThan(currentV) || v.Equal(currentV) {
-			continue
-		}
-
-		if v.Major() == currentV.Major() && v.Minor() == currentV.Minor() {
+		if v.Parsed.Major() == currentV.Major() && v.Parsed.Minor() == currentV.Minor() {
 			bestPatch = v
-		} else if v.Major() == currentV.Major() && v.Minor() > currentV.Minor() {
+			hasPatch = true
+		} else if v.Parsed.Major() == currentV.Major() && v.Parsed.Minor() > currentV.Minor() {
 			bestMinor = v
-		} else if v.Major() > currentV.Major() {
+			hasMinor = true
+		} else if v.Parsed.Major() > currentV.Major() {
 			bestMajor = v
+			hasMajor = true
 		}
 	}
 
-	if bestPatch != nil {
-		candidates.Patch = bestPatch.Original()
+	if hasPatch {
+		candidates.Patch = bestPatch.Original
 	}
-	if bestMinor != nil {
-		candidates.Minor = bestMinor.Original()
+	if hasMinor {
+		candidates.Minor = bestMinor.Original
 	}
-	if bestMajor != nil {
-		candidates.Major = bestMajor.Original()
+	if hasMajor {
+		candidates.Major = bestMajor.Original
 	}
 
 	c.cacheMu.Lock()
@@ -208,11 +227,6 @@ func (c *Checker) GetUpdateCandidates(imageName, currentVersion string, includeR
 	}
 	c.cacheMu.Unlock()
 
-	// Save to disk asynchronously/immediately
-	// Since we are inside a goroutine from the UI (mostly), this is fine.
-	// But saving on EVERY update might be heavy if many updates happen at once.
-	// However, mutex protects the map. The saveCache also locks mutex.
-	// We should probably save outside lock.
 	c.saveCache()
 
 	return candidates, nil
