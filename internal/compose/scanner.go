@@ -5,18 +5,37 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 
 	"github.com/compose-spec/compose-go/v2/cli"
 )
 
-// UpdateImages updates the docker-compose files with new image versions.
+// UpdateImages updates the docker-compose files (or .env files) with new image versions.
 func (s *Scanner) UpdateImages(images []ContainerImage) error {
-	// Group updates by file
-	updatesByFile := make(map[string][]ContainerImage)
+	type FileUpdate struct {
+		IsEnv      bool
+		EnvVarName string
+		Image      ContainerImage
+	}
+
+	updatesByFile := make(map[string][]FileUpdate)
 	for _, img := range images {
-		if img.NewVersion != "" {
-			updatesByFile[img.FilePath] = append(updatesByFile[img.FilePath], img)
+		if img.NewVersion == "" {
+			continue
+		}
+
+		if img.EnvVarName != "" && img.EnvFilePath != "" {
+			updatesByFile[img.EnvFilePath] = append(updatesByFile[img.EnvFilePath], FileUpdate{
+				IsEnv:      true,
+				EnvVarName: img.EnvVarName,
+				Image:      img,
+			})
+		} else {
+			updatesByFile[img.FilePath] = append(updatesByFile[img.FilePath], FileUpdate{
+				IsEnv: false,
+				Image: img,
+			})
 		}
 	}
 
@@ -28,36 +47,31 @@ func (s *Scanner) UpdateImages(images []ContainerImage) error {
 
 		strContent := string(content)
 
-		for _, update := range updates {
-			// Naive replacement: finding "image: name:version" and replacing it.
-			// This might be risky if whitespace varies or if same image is used multiple times with different tags (unlikely for exact string match).
-			// Better is to replace the specific instance.
-
-			// Construct old and new strings using appropriate separator
-			sep := ":"
-			if strings.HasPrefix(update.CurrentVersion, "sha256:") {
-				sep = "@"
+		if updates[0].IsEnv {
+			for _, u := range updates {
+				var updated bool
+				strContent, updated = updateEnvVar(strContent, u.EnvVarName, u.Image.NewVersion)
+				if !updated {
+					return fmt.Errorf("variable %s not found or could not be updated in %s", u.EnvVarName, filePath)
+				}
 			}
-			oldImageStr := fmt.Sprintf("%s%s%s", update.ImageName, sep, update.CurrentVersion)
+		} else {
+			for _, u := range updates {
+				update := u.Image
+				sep := ":"
+				if strings.HasPrefix(update.CurrentVersion, "sha256:") {
+					sep = "@"
+				}
+				oldImageStr := fmt.Sprintf("%s%s%s", update.ImageName, sep, update.CurrentVersion)
 
-			newSep := ":"
-			if strings.HasPrefix(update.NewVersion, "sha256:") {
-				newSep = "@"
+				newSep := ":"
+				if strings.HasPrefix(update.NewVersion, "sha256:") {
+					newSep = "@"
+				}
+				newImageStr := fmt.Sprintf("%s%s%s", update.ImageName, newSep, update.NewVersion)
+
+				strContent = strings.Replace(strContent, oldImageStr, newImageStr, -1)
 			}
-			newImageStr := fmt.Sprintf("%s%s%s", update.ImageName, newSep, update.NewVersion)
-
-			// To be safer, we should probably use the line we found initially?
-			// But we didn't store line numbers.
-			// Let's assume standard "image: name:tag" format for now, or just replace the substring.
-
-			// This will replace ALL occurrences of that image:tag in the file.
-			// Usually acceptable for a simple tool, but strictly maybe user wants to update only one service?
-			// Given our UI lists service, we effectively update "Service" entry.
-			// But if two services use same image:tag, this replace updates both.
-			// To fix this accurately without line numbers, we'd need to re-parse or use AST.
-			// For this task, let's Stick to simple ReplaceAll but warn/document.
-
-			strContent = strings.Replace(strContent, oldImageStr, newImageStr, -1)
 		}
 
 		if err := os.WriteFile(filePath, []byte(strContent), 0644); err != nil {
@@ -79,6 +93,8 @@ type ContainerImage struct {
 	UpdateMajor    string
 	Labels         map[string]string
 	FilePath       string
+	EnvVarName     string // Name of the environment variable (e.g. GRAYLOG_VERSION) if the version is defined in a .env file
+	EnvFilePath    string // Path to the .env file containing the version definition
 }
 
 // Scanner scans directories for docker-compose files.
@@ -192,24 +208,110 @@ func isComposeFile(filename string) bool {
 		filename == "compose.yml" || filename == "compose.yaml"
 }
 
+var varRegex = regexp.MustCompile(`\$\{([a-zA-Z_][a-zA-Z0-9_]*)(?:[^}]*)?\}|\$([a-zA-Z_][a-zA-Z0-9_]*)`)
+
+func extractVars(s string) []string {
+	matches := varRegex.FindAllStringSubmatch(s, -1)
+	var vars []string
+	for _, m := range matches {
+		if m[1] != "" {
+			vars = append(vars, m[1])
+		} else if m[2] != "" {
+			vars = append(vars, m[2])
+		}
+	}
+	return vars
+}
+
+func hasEnvVar(envFilePath string, varName string) bool {
+	content, err := os.ReadFile(envFilePath)
+	if err != nil {
+		return false
+	}
+	pattern := fmt.Sprintf(`(?m)^(\s*(?:export\s+)?%s\s*=)`, regexp.QuoteMeta(varName))
+	matched, _ := regexp.Match(pattern, content)
+	return matched
+}
+
+func updateEnvVar(content string, varName string, newValue string) (string, bool) {
+	lines := strings.Split(content, "\n")
+	updated := false
+
+	pattern := fmt.Sprintf(`^(\s*(?:export\s+)?%s\s*=\s*)(['"]?)(.*?)(['"]?)(\s*(?:#.*)?)$`, regexp.QuoteMeta(varName))
+	re, err := regexp.Compile(pattern)
+	if err != nil {
+		return content, false
+	}
+
+	for i, line := range lines {
+		matches := re.FindStringSubmatch(line)
+		if len(matches) == 6 {
+			openQuote := matches[2]
+			closeQuote := matches[4]
+			if openQuote == closeQuote {
+				lines[i] = fmt.Sprintf("%s%s%s%s%s", matches[1], openQuote, newValue, closeQuote, matches[5])
+				updated = true
+			}
+		}
+	}
+
+	return strings.Join(lines, "\n"), updated
+}
+
+func splitImageAndTag(imageStr string) (name string, tag string) {
+	braceDepth := 0
+	lastAt := -1
+	lastColon := -1
+	lastSlash := -1
+
+	runes := []rune(imageStr)
+	for i := 0; i < len(runes); i++ {
+		c := runes[i]
+		if c == '{' {
+			braceDepth++
+		} else if c == '}' {
+			braceDepth--
+		} else if braceDepth == 0 {
+			if c == '@' {
+				lastAt = i
+			} else if c == ':' {
+				lastColon = i
+			} else if c == '/' {
+				lastSlash = i
+			}
+		}
+	}
+
+	if lastAt > lastSlash {
+		return string(runes[:lastAt]), string(runes[lastAt+1:])
+	}
+	if lastColon > lastSlash {
+		return string(runes[:lastColon]), string(runes[lastColon+1:])
+	}
+	return imageStr, ""
+}
+
 func parseComposeFile(path string) ([]ContainerImage, error) {
-	// compose-go needs a ProjectOptions to load
-	opts, err := cli.NewProjectOptions([]string{path}, cli.WithDotEnv, cli.WithOsEnv)
+	// 1. Load project WITH interpolation (correctly loading .env)
+	opts, err := cli.NewProjectOptions([]string{path}, cli.WithEnvFiles(), cli.WithDotEnv, cli.WithOsEnv)
 	if err != nil {
 		return nil, err
 	}
 
 	project, err := cli.ProjectFromOptions(context.Background(), opts)
 	if err != nil {
-		// Fallback for simple cases if full loading fails (e.g. missing vars)
-		// For now let's try to load just the config without interpolation if possible,
-		// but cli.ProjectFromOptions is the standard way.
-		// If it fails, it might be due to missing env vars.
-		// Let's try to ignore interpolation errors if possible, but compose-go is strict.
-
-		// Alternative: Manually load using loader if CLI fails?
-		// Let's stick to standard scan for now.
 		return nil, err
+	}
+
+	// 2. Load project WITHOUT interpolation to find environment variable definitions in image tags
+	rawImages := make(map[string]string)
+	optsNoInt, err := cli.NewProjectOptions([]string{path}, cli.WithInterpolation(false))
+	if err == nil {
+		if projectNoInt, err := cli.ProjectFromOptions(context.Background(), optsNoInt); err == nil {
+			for _, service := range projectNoInt.Services {
+				rawImages[service.Name] = service.Image
+			}
+		}
 	}
 
 	var images []ContainerImage
@@ -219,34 +321,25 @@ func parseComposeFile(path string) ([]ContainerImage, error) {
 			continue
 		}
 
-		// Improved parsing for images with tags and digests
-		// Expected formats:
-		// - name
-		// - name:tag
-		// - name@digest
-		// - name:tag@digest
+		name, version := splitImageAndTag(imageName)
+		if version == "" {
+			version = "latest"
+		}
 
-		name := imageName
-		version := "latest"
-
-		// Handle @digest first
-		if atIdx := strings.Index(imageName, "@"); atIdx != -1 {
-			name = imageName[:atIdx]
-			version = imageName[atIdx+1:] // This is the digest (e.g. sha256:hash)
-
-			// If name still has a tag, we might want to keep it?
-			// Actually, if it has a tag, the full image is name:tag@digest.
-			// Current implementation splits by ':' later to replace.
-			// If we want to support updating these, we need to be careful.
-			// For now, let's treat the part after @ as the version.
-		} else if colonIdx := strings.LastIndex(imageName, ":"); colonIdx != -1 {
-			// Check if the colon is part of a port (e.g. localhost:5000/image)
-			// If there's a slash AFTER the last colon, then it's a port? No, that's impossible.
-			// If there's a slash BEFORE the last colon, we need to check if it's the registry port.
-			lastSlash := strings.LastIndex(imageName, "/")
-			if colonIdx > lastSlash {
-				name = imageName[:colonIdx]
-				version = imageName[colonIdx+1:]
+		// Check if the version is defined via environment variable in the original file
+		var envVarName, envFilePath string
+		if rawImage, found := rawImages[service.Name]; found && rawImage != "" {
+			_, rawTag := splitImageAndTag(rawImage)
+			if rawTag != "" {
+				vars := extractVars(rawTag)
+				if len(vars) > 0 {
+					vName := vars[0]
+					dotEnvPath := filepath.Join(filepath.Dir(path), ".env")
+					if hasEnvVar(dotEnvPath, vName) {
+						envVarName = vName
+						envFilePath = dotEnvPath
+					}
+				}
 			}
 		}
 
@@ -257,6 +350,8 @@ func parseComposeFile(path string) ([]ContainerImage, error) {
 			CurrentVersion: version,
 			Labels:         service.Labels,
 			FilePath:       path,
+			EnvVarName:     envVarName,
+			EnvFilePath:    envFilePath,
 		})
 	}
 
