@@ -117,6 +117,61 @@ func (r *Root) Render(images []compose.ContainerImage, checker *registry.Checker
 	return r.app.Run()
 }
 
+// ImageCheckKey uniquely identifies an image version check configuration.
+type ImageCheckKey struct {
+	ImageName      string
+	CurrentVersion string
+	IncludeRegex   string
+	ExcludeRegex   string
+	TransformExpr  string
+}
+
+// ImageGroup groups images sharing the same ImageCheckKey.
+type ImageGroup struct {
+	Key     ImageCheckKey
+	Indices []int
+}
+
+// ExtractCheckKey extracts the ImageCheckKey from a ContainerImage.
+func ExtractCheckKey(img compose.ContainerImage) ImageCheckKey {
+	key := ImageCheckKey{
+		ImageName:      img.ImageName,
+		CurrentVersion: img.CurrentVersion,
+	}
+	if img.Labels != nil {
+		if val, ok := img.Labels["wud.tag.include"]; ok {
+			key.IncludeRegex = val
+		}
+		if val, ok := img.Labels["wud.tag.exclude"]; ok {
+			key.ExcludeRegex = val
+		}
+		if val, ok := img.Labels["wud.tag.transform"]; ok {
+			key.TransformExpr = val
+		}
+	}
+	return key
+}
+
+// GroupImages groups identical image tags so they are checked only once.
+func GroupImages(images []compose.ContainerImage) []ImageGroup {
+	var groups []ImageGroup
+	groupMap := make(map[ImageCheckKey]int)
+
+	for i, img := range images {
+		key := ExtractCheckKey(img)
+		if idx, ok := groupMap[key]; ok {
+			groups[idx].Indices = append(groups[idx].Indices, i)
+		} else {
+			groupMap[key] = len(groups)
+			groups = append(groups, ImageGroup{
+				Key:     key,
+				Indices: []int{i},
+			})
+		}
+	}
+	return groups
+}
+
 func (r *Root) checkUpdates(checker *registry.Checker, forceRefresh bool) {
 	var wg sync.WaitGroup
 	sem := make(chan struct{}, 5) // Limit concurrency to 5
@@ -131,58 +186,54 @@ func (r *Root) checkUpdates(checker *registry.Checker, forceRefresh bool) {
 		r.refreshTable()
 	})
 
-	for i := range r.images {
+	groups := GroupImages(r.images)
+
+	for _, group := range groups {
 		wg.Add(1)
-		go func(idx int) {
+		go func(g ImageGroup) {
 			defer wg.Done()
 			sem <- struct{}{}
 			defer func() { <-sem }()
 
-			// Mark as checking
+			// Mark all images in this group as checking
 			r.app.QueueUpdateDraw(func() {
-				r.checkStatus[idx] = CheckStateChecking
+				for _, idx := range g.Indices {
+					r.checkStatus[idx] = CheckStateChecking
+				}
 				r.refreshTable()
 			})
 
-			includeRegex := ""
-			excludeRegex := ""
-			transformExpr := ""
-			if r.images[idx].Labels != nil {
-				if val, ok := r.images[idx].Labels["wud.tag.include"]; ok {
-					includeRegex = val
-				}
-				if val, ok := r.images[idx].Labels["wud.tag.exclude"]; ok {
-					excludeRegex = val
-				}
-				if val, ok := r.images[idx].Labels["wud.tag.transform"]; ok {
-					transformExpr = val
-				}
-			}
-
-			candidates, err := checker.GetUpdateCandidates(r.images[idx].ImageName, r.images[idx].CurrentVersion, includeRegex, excludeRegex, transformExpr, forceRefresh)
+			candidates, err := checker.GetUpdateCandidates(
+				g.Key.ImageName,
+				g.Key.CurrentVersion,
+				g.Key.IncludeRegex,
+				g.Key.ExcludeRegex,
+				g.Key.TransformExpr,
+				forceRefresh,
+			)
 
 			// Update image data in main thread safe way
 			r.app.QueueUpdateDraw(func() {
-				r.checkStatus[idx] = CheckStateDone
-				if err != nil {
-					// We could store error state to show in UI
-				} else {
-					r.images[idx].UpdatePatch = candidates.Patch
-					r.images[idx].UpdateMinor = candidates.Minor
-					r.images[idx].UpdateMajor = candidates.Major
+				for _, idx := range g.Indices {
+					r.checkStatus[idx] = CheckStateDone
+					if err == nil {
+						r.images[idx].UpdatePatch = candidates.Patch
+						r.images[idx].UpdateMinor = candidates.Minor
+						r.images[idx].UpdateMajor = candidates.Major
 
-					// Default selection priority: Patch > Minor > Major
-					if candidates.Patch != "" {
-						r.images[idx].NewVersion = candidates.Patch
-					} else if candidates.Minor != "" {
-						r.images[idx].NewVersion = candidates.Minor
-					} else if candidates.Major != "" {
-						r.images[idx].NewVersion = candidates.Major
+						// Default selection priority: Patch > Minor > Major
+						if candidates.Patch != "" {
+							r.images[idx].NewVersion = candidates.Patch
+						} else if candidates.Minor != "" {
+							r.images[idx].NewVersion = candidates.Minor
+						} else if candidates.Major != "" {
+							r.images[idx].NewVersion = candidates.Major
+						}
 					}
 				}
 				r.refreshTable()
 			})
-		}(i)
+		}(group)
 	}
 	wg.Wait()
 }

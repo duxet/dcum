@@ -14,6 +14,7 @@ import (
 	"github.com/Masterminds/semver/v3"
 	"github.com/google/go-containerregistry/pkg/name"
 	"github.com/google/go-containerregistry/pkg/v1/remote"
+	"golang.org/x/sync/singleflight"
 )
 
 // Checker checks for updates in container registries.
@@ -21,6 +22,7 @@ type Checker struct {
 	cacheMu   sync.Mutex
 	cache     map[string]CachedCandidates
 	cachePath string
+	sf        singleflight.Group
 }
 
 type CachedCandidates struct {
@@ -118,116 +120,132 @@ func (c *Checker) GetUpdateCandidates(imageName, currentVersion string, includeR
 		c.cacheMu.Unlock()
 	}
 
-	var candidates UpdateCandidates
+	val, err, _ := c.sf.Do(cacheKey, func() (interface{}, error) {
+		if !forceRefresh {
+			c.cacheMu.Lock()
+			if val, ok := c.cache[cacheKey]; ok {
+				c.cacheMu.Unlock()
+				return val.Candidates, nil
+			}
+			c.cacheMu.Unlock()
+		}
 
-	// Apply transform to current version if specified
-	transformedCurrent := applyTransform(currentVersion, transformExpr)
-	currentV, err := semver.NewVersion(transformedCurrent)
-	if err != nil {
-		return candidates, nil
-	}
+		var candidates UpdateCandidates
 
-	repo, err := name.NewRepository(imageName)
-	if err != nil {
-		return candidates, fmt.Errorf("parsing repo name: %w", err)
-	}
-
-	// Fetch tags
-	tags, err := remote.List(repo)
-	if err != nil {
-		return candidates, fmt.Errorf("listing tags: %w", err)
-	}
-
-	var includeFilter *regexp.Regexp
-	if includeRegex != "" {
-		r, err := regexp.Compile(includeRegex)
+		// Apply transform to current version if specified
+		transformedCurrent := applyTransform(currentVersion, transformExpr)
+		currentV, err := semver.NewVersion(transformedCurrent)
 		if err != nil {
-			return candidates, fmt.Errorf("invalid include regex %s: %w", includeRegex, err)
+			return candidates, nil
 		}
-		includeFilter = r
-	}
 
-	var excludeFilter *regexp.Regexp
-	if excludeRegex != "" {
-		r, err := regexp.Compile(excludeRegex)
+		repo, err := name.NewRepository(imageName)
 		if err != nil {
-			return candidates, fmt.Errorf("invalid exclude regex %s: %w", excludeRegex, err)
-		}
-		excludeFilter = r
-	}
-
-	type versionMapping struct {
-		Original string
-		Parsed   *semver.Version
-	}
-
-	var parsedVersions []versionMapping
-	for _, tag := range tags {
-		if includeFilter != nil && !includeFilter.MatchString(tag) {
-			continue
-		}
-		if excludeFilter != nil && excludeFilter.MatchString(tag) {
-			continue
+			return candidates, fmt.Errorf("parsing repo name: %w", err)
 		}
 
-		transformedTag := applyTransform(tag, transformExpr)
-		v, err := semver.NewVersion(transformedTag)
+		// Fetch tags
+		tags, err := remote.List(repo)
 		if err != nil {
-			continue
+			return candidates, fmt.Errorf("listing tags: %w", err)
 		}
 
-		// If custom regex matches, we should allow pre-releases if they are valid semver
-		if includeFilter == nil && v.Prerelease() != "" {
-			continue
+		var includeFilter *regexp.Regexp
+		if includeRegex != "" {
+			r, err := regexp.Compile(includeRegex)
+			if err != nil {
+				return candidates, fmt.Errorf("invalid include regex %s: %w", includeRegex, err)
+			}
+			includeFilter = r
 		}
-		parsedVersions = append(parsedVersions, versionMapping{
-			Original: tag,
-			Parsed:   v,
+
+		var excludeFilter *regexp.Regexp
+		if excludeRegex != "" {
+			r, err := regexp.Compile(excludeRegex)
+			if err != nil {
+				return candidates, fmt.Errorf("invalid exclude regex %s: %w", excludeRegex, err)
+			}
+			excludeFilter = r
+		}
+
+		type versionMapping struct {
+			Original string
+			Parsed   *semver.Version
+		}
+
+		var parsedVersions []versionMapping
+		for _, tag := range tags {
+			if includeFilter != nil && !includeFilter.MatchString(tag) {
+				continue
+			}
+			if excludeFilter != nil && excludeFilter.MatchString(tag) {
+				continue
+			}
+
+			transformedTag := applyTransform(tag, transformExpr)
+			v, err := semver.NewVersion(transformedTag)
+			if err != nil {
+				continue
+			}
+
+			// If custom regex matches, we should allow pre-releases if they are valid semver
+			if includeFilter == nil && v.Prerelease() != "" {
+				continue
+			}
+			parsedVersions = append(parsedVersions, versionMapping{
+				Original: tag,
+				Parsed:   v,
+			})
+		}
+
+		sort.Slice(parsedVersions, func(i, j int) bool {
+			return parsedVersions[i].Parsed.LessThan(parsedVersions[j].Parsed)
 		})
-	}
 
-	sort.Slice(parsedVersions, func(i, j int) bool {
-		return parsedVersions[i].Parsed.LessThan(parsedVersions[j].Parsed)
+		var bestPatch, bestMinor, bestMajor versionMapping
+		hasPatch, hasMinor, hasMajor := false, false, false
+
+		for _, v := range parsedVersions {
+			if v.Parsed.LessThan(currentV) || v.Parsed.Equal(currentV) {
+				continue
+			}
+
+			if v.Parsed.Major() == currentV.Major() && v.Parsed.Minor() == currentV.Minor() {
+				bestPatch = v
+				hasPatch = true
+			} else if v.Parsed.Major() == currentV.Major() && v.Parsed.Minor() > currentV.Minor() {
+				bestMinor = v
+				hasMinor = true
+			} else if v.Parsed.Major() > currentV.Major() {
+				bestMajor = v
+				hasMajor = true
+			}
+		}
+
+		if hasPatch {
+			candidates.Patch = bestPatch.Original
+		}
+		if hasMinor {
+			candidates.Minor = bestMinor.Original
+		}
+		if hasMajor {
+			candidates.Major = bestMajor.Original
+		}
+
+		c.cacheMu.Lock()
+		c.cache[cacheKey] = CachedCandidates{
+			Candidates: candidates,
+			Timestamp:  time.Now(),
+		}
+		c.cacheMu.Unlock()
+
+		c.saveCache()
+
+		return candidates, nil
 	})
 
-	var bestPatch, bestMinor, bestMajor versionMapping
-	hasPatch, hasMinor, hasMajor := false, false, false
-
-	for _, v := range parsedVersions {
-		if v.Parsed.LessThan(currentV) || v.Parsed.Equal(currentV) {
-			continue
-		}
-
-		if v.Parsed.Major() == currentV.Major() && v.Parsed.Minor() == currentV.Minor() {
-			bestPatch = v
-			hasPatch = true
-		} else if v.Parsed.Major() == currentV.Major() && v.Parsed.Minor() > currentV.Minor() {
-			bestMinor = v
-			hasMinor = true
-		} else if v.Parsed.Major() > currentV.Major() {
-			bestMajor = v
-			hasMajor = true
-		}
+	if err != nil {
+		return UpdateCandidates{}, err
 	}
-
-	if hasPatch {
-		candidates.Patch = bestPatch.Original
-	}
-	if hasMinor {
-		candidates.Minor = bestMinor.Original
-	}
-	if hasMajor {
-		candidates.Major = bestMajor.Original
-	}
-
-	c.cacheMu.Lock()
-	c.cache[cacheKey] = CachedCandidates{
-		Candidates: candidates,
-		Timestamp:  time.Now(),
-	}
-	c.cacheMu.Unlock()
-
-	c.saveCache()
-
-	return candidates, nil
+	return val.(UpdateCandidates), nil
 }
