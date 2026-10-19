@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
+	"time"
 
 	"github.com/duxet/dcum/internal/compose"
 	"github.com/duxet/dcum/internal/config"
@@ -25,13 +27,17 @@ const (
 // Root represents the UI application.
 type Root struct {
 	app              *tview.Application
+	grid             *tview.Grid
 	table            *tview.Table
+	progressBar      *tview.TextView
 	statusBar        *tview.TextView
 	images           []compose.ContainerImage
 	checkStatus      map[int]CheckState // Track status of each row
 	config           *config.Config
 	filterUpdates    bool
 	displayedIndices []int // Maps table row to index in images slice
+	isChecking       bool
+	checkingMu       sync.Mutex
 }
 
 // NewRoot creates a new UI application.
@@ -42,18 +48,59 @@ func NewRoot(cfg *config.Config) *Root {
 		SetSelectable(true, false). // Select rows, not columns
 		SetFixed(1, 1)              // Fix header row
 
+	progressBar := tview.NewTextView().
+		SetDynamicColors(true).
+		SetTextAlign(tview.AlignCenter)
+
 	statusBar := tview.NewTextView().
 		SetDynamicColors(true).
 		SetTextAlign(tview.AlignCenter).
 		SetText("Loading...")
 
-	return &Root{
+	grid := tview.NewGrid().
+		SetColumns(0).
+		SetBorders(false)
+
+	r := &Root{
 		app:              app,
+		grid:             grid,
 		table:            table,
+		progressBar:      progressBar,
 		statusBar:        statusBar,
 		config:           cfg,
 		displayedIndices: []int{},
 	}
+	r.setLayout(false)
+	return r
+}
+
+func (r *Root) setLayout(showProgress bool) {
+	r.grid.Clear()
+	if showProgress {
+		r.grid.SetRows(0, 1, 1)
+		r.grid.AddItem(r.table, 0, 0, 1, 1, 0, 0, true)
+		r.grid.AddItem(r.progressBar, 1, 0, 1, 1, 0, 0, false)
+		r.grid.AddItem(r.statusBar, 2, 0, 1, 1, 0, 0, false)
+	} else {
+		r.grid.SetRows(0, 1)
+		r.grid.AddItem(r.table, 0, 0, 1, 1, 0, 0, true)
+		r.grid.AddItem(r.statusBar, 1, 0, 1, 1, 0, 0, false)
+	}
+	r.app.SetFocus(r.table)
+}
+
+func (r *Root) updateProgressBar(current, total int) {
+	width := 30
+	if _, _, screenWidth, _ := r.progressBar.GetInnerRect(); screenWidth > 0 {
+		avail := screenWidth - 45
+		if avail < 10 {
+			avail = 10
+		} else if avail > 30 {
+			avail = 30
+		}
+		width = avail
+	}
+	r.progressBar.SetText(FormatProgressBar(current, total, width))
 }
 
 // Render displays the list of container images in the table.
@@ -67,15 +114,7 @@ func (r *Root) Render(images []compose.ContainerImage, checker *registry.Checker
 		r.displayedIndices[i] = i
 	}
 
-	// Create layout
-	grid := tview.NewGrid().
-		SetRows(0, 1).
-		SetColumns(0).
-		SetBorders(false)
-
-	grid.AddItem(r.table, 0, 0, 1, 1, 0, 0, true)
-	grid.AddItem(r.statusBar, 1, 0, 1, 1, 0, 0, false)
-
+	r.setLayout(false)
 	r.refreshTable()
 	r.updateStatusBar()
 
@@ -86,7 +125,7 @@ func (r *Root) Render(images []compose.ContainerImage, checker *registry.Checker
 		}
 	})
 
-	r.app.SetRoot(grid, true).EnableMouse(true)
+	r.app.SetRoot(r.grid, true).EnableMouse(true)
 
 	// Add 'q' to quit, 's' to save, 'r' to refresh
 	r.app.SetInputCapture(func(event *tcell.EventKey) *tcell.EventKey {
@@ -173,20 +212,41 @@ func GroupImages(images []compose.ContainerImage) []ImageGroup {
 }
 
 func (r *Root) checkUpdates(checker *registry.Checker, forceRefresh bool) {
-	var wg sync.WaitGroup
-	sem := make(chan struct{}, 5) // Limit concurrency to 5
+	r.checkingMu.Lock()
+	if r.isChecking {
+		r.checkingMu.Unlock()
+		return
+	}
+	r.isChecking = true
+	r.checkingMu.Unlock()
 
-	// Initialize all as pending first
+	defer func() {
+		r.checkingMu.Lock()
+		r.isChecking = false
+		r.checkingMu.Unlock()
+	}()
+
+	totalImages := len(r.images)
+	if totalImages == 0 {
+		return
+	}
+
+	// Initialize all as pending first and show progress bar
 	r.app.QueueUpdateDraw(func() {
 		for i := range r.images {
-			if _, ok := r.checkStatus[i]; !ok {
+			if _, ok := r.checkStatus[i]; !ok || forceRefresh {
 				r.checkStatus[i] = CheckStatePending
 			}
 		}
+		r.updateProgressBar(0, totalImages)
+		r.setLayout(true)
 		r.refreshTable()
 	})
 
+	var wg sync.WaitGroup
+	sem := make(chan struct{}, 5) // Limit concurrency to 5
 	groups := GroupImages(r.images)
+	var completedCount int32
 
 	for _, group := range groups {
 		wg.Add(1)
@@ -212,6 +272,8 @@ func (r *Root) checkUpdates(checker *registry.Checker, forceRefresh bool) {
 				forceRefresh,
 			)
 
+			completed := atomic.AddInt32(&completedCount, int32(len(g.Indices)))
+
 			// Update image data in main thread safe way
 			r.app.QueueUpdateDraw(func() {
 				for _, idx := range g.Indices {
@@ -231,11 +293,18 @@ func (r *Root) checkUpdates(checker *registry.Checker, forceRefresh bool) {
 						}
 					}
 				}
+				r.updateProgressBar(int(completed), totalImages)
 				r.refreshTable()
 			})
 		}(group)
 	}
 	wg.Wait()
+
+	// Short delay so 100% completion is visibly acknowledged before hiding
+	time.Sleep(300 * time.Millisecond)
+	r.app.QueueUpdateDraw(func() {
+		r.setLayout(false)
+	})
 }
 
 func (r *Root) updateStatusBar() {
