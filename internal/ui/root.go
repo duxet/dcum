@@ -34,6 +34,7 @@ type Root struct {
 	images           []compose.ContainerImage
 	checkStatus      map[int]CheckState // Track status of each row
 	config           *config.Config
+	autoSelectMax    UpdateLevel // Default for services without the dcum.autoselect.max label
 	filterUpdates    bool
 	displayedIndices []int // Maps table row to index in images slice
 	isChecking       bool
@@ -61,6 +62,11 @@ func NewRoot(cfg *config.Config) *Root {
 		SetColumns(0).
 		SetBorders(false)
 
+	autoSelectMax, ok := ParseUpdateLevel(cfg.AutoSelectMax)
+	if !ok {
+		autoSelectMax = UpdateLevelMajor
+	}
+
 	r := &Root{
 		app:              app,
 		grid:             grid,
@@ -68,6 +74,7 @@ func NewRoot(cfg *config.Config) *Root {
 		progressBar:      progressBar,
 		statusBar:        statusBar,
 		config:           cfg,
+		autoSelectMax:    autoSelectMax,
 		displayedIndices: []int{},
 	}
 	r.setLayout(false)
@@ -283,7 +290,7 @@ func (r *Root) checkUpdates(checker *registry.Checker, forceRefresh bool) {
 						r.images[idx].UpdateMinor = candidates.Minor
 						r.images[idx].UpdateMajor = candidates.Major
 
-						maxLevel := AutoSelectMax(r.images[idx].Labels)
+						maxLevel := AutoSelectMax(r.images[idx].Labels, r.autoSelectMax)
 						if v := DefaultVersion(candidates, maxLevel); v != "" {
 							r.images[idx].NewVersion = v
 						}

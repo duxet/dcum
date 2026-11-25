@@ -10,21 +10,22 @@ func TestAutoSelectMax(t *testing.T) {
 	testCases := []struct {
 		name     string
 		labels   map[string]string
+		fallback UpdateLevel
 		expected UpdateLevel
 	}{
-		{name: "Nil labels", labels: nil, expected: UpdateLevelMajor},
-		{name: "Label missing", labels: map[string]string{"wud.tag.include": "^15\\."}, expected: UpdateLevelMajor},
-		{name: "Patch", labels: map[string]string{AutoSelectMaxLabel: "patch"}, expected: UpdateLevelPatch},
-		{name: "Minor", labels: map[string]string{AutoSelectMaxLabel: "minor"}, expected: UpdateLevelMinor},
-		{name: "Major", labels: map[string]string{AutoSelectMaxLabel: "major"}, expected: UpdateLevelMajor},
-		{name: "Case and whitespace", labels: map[string]string{AutoSelectMaxLabel: " Minor "}, expected: UpdateLevelMinor},
-		{name: "Unknown value", labels: map[string]string{AutoSelectMaxLabel: "minro"}, expected: UpdateLevelNone},
-		{name: "Empty value", labels: map[string]string{AutoSelectMaxLabel: ""}, expected: UpdateLevelNone},
+		{name: "Nil labels use fallback", labels: nil, fallback: UpdateLevelMajor, expected: UpdateLevelMajor},
+		{name: "Missing label uses fallback", labels: map[string]string{"wud.tag.include": "^15\\."}, fallback: UpdateLevelMinor, expected: UpdateLevelMinor},
+		{name: "Patch", labels: map[string]string{AutoSelectMaxLabel: "patch"}, fallback: UpdateLevelMajor, expected: UpdateLevelPatch},
+		{name: "Minor", labels: map[string]string{AutoSelectMaxLabel: "minor"}, fallback: UpdateLevelMajor, expected: UpdateLevelMinor},
+		{name: "Label raises fallback", labels: map[string]string{AutoSelectMaxLabel: "major"}, fallback: UpdateLevelMinor, expected: UpdateLevelMajor},
+		{name: "Case and whitespace", labels: map[string]string{AutoSelectMaxLabel: " Minor "}, fallback: UpdateLevelMajor, expected: UpdateLevelMinor},
+		{name: "Unknown value", labels: map[string]string{AutoSelectMaxLabel: "minro"}, fallback: UpdateLevelMajor, expected: UpdateLevelNone},
+		{name: "Empty value", labels: map[string]string{AutoSelectMaxLabel: ""}, fallback: UpdateLevelMajor, expected: UpdateLevelNone},
 	}
 
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := AutoSelectMax(tc.labels); got != tc.expected {
+			if got := AutoSelectMax(tc.labels, tc.fallback); got != tc.expected {
 				t.Errorf("expected %d, got %d", tc.expected, got)
 			}
 		})

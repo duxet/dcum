@@ -35,6 +35,16 @@ Default exclusion patterns (if no config file is found):
 - `**/.git/**`
 - `**/vendor/**`
 
+### Automatic Version Selection
+
+Set `autoselect_max` to the highest update level (`patch`, `minor` or `major`) that dcum selects automatically for all services. The default is `major`.
+
+```yaml
+autoselect_max: minor
+```
+
+The `dcum.autoselect.max` label overrides it per service (see [Labels](#labels)).
+
 See `dcum.yaml.example` for a complete configuration example.
 
 ## Labels
@@ -46,13 +56,13 @@ Update checks can be tuned per service with labels in your compose files:
 | `wud.tag.include` | Only tags matching this regex are considered. |
 | `wud.tag.exclude` | Tags matching this regex are ignored. |
 | `wud.tag.transform` | `pattern => replacement` applied to tags before comparing versions. |
-| `dcum.autoselect.max` | Highest update level selected automatically: `patch`, `minor` or `major` (default). |
+| `dcum.autoselect.max` | Highest update level selected automatically: `patch`, `minor` or `major`. Overrides `autoselect_max` from the configuration file. |
 
 The `wud.*` labels follow the [What's Up Docker](https://getwud.github.io/wud/) format.
 
 ### Limiting automatic selection
 
-After checking for updates, dcum selects the lowest available update for each service (patch, then minor, then major). Some services, like databases, need extra care for major upgrades. Set `dcum.autoselect.max` to stop dcum from selecting those automatically:
+After checking for updates, dcum selects the lowest available update for each service (patch, then minor, then major). Some services, like databases, need extra care for major upgrades. Set `dcum.autoselect.max` to stop dcum from selecting those automatically (or set `autoselect_max` in the configuration file to do it for all services):
 
 ```yaml
 services:

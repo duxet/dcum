@@ -21,25 +21,32 @@ const (
 	UpdateLevelMajor
 )
 
+// ParseUpdateLevel parses "patch", "minor" or "major" (case-insensitive).
+func ParseUpdateLevel(s string) (UpdateLevel, bool) {
+	switch strings.ToLower(strings.TrimSpace(s)) {
+	case "patch":
+		return UpdateLevelPatch, true
+	case "minor":
+		return UpdateLevelMinor, true
+	case "major":
+		return UpdateLevelMajor, true
+	default:
+		return UpdateLevelNone, false
+	}
+}
+
 // AutoSelectMax returns the highest update level that may be selected
-// automatically for a service with the given labels. Without the label every
-// level is allowed. An unrecognized value disables automatic selection, so a
-// typo never results in an unexpected major bump.
-func AutoSelectMax(labels map[string]string) UpdateLevel {
+// automatically for a service with the given labels. Without the label the
+// fallback (from the configuration file) applies. An unrecognized label value
+// disables automatic selection, so a typo never results in an unexpected
+// major bump.
+func AutoSelectMax(labels map[string]string, fallback UpdateLevel) UpdateLevel {
 	val, ok := labels[AutoSelectMaxLabel]
 	if !ok {
-		return UpdateLevelMajor
+		return fallback
 	}
-	switch strings.ToLower(strings.TrimSpace(val)) {
-	case "patch":
-		return UpdateLevelPatch
-	case "minor":
-		return UpdateLevelMinor
-	case "major":
-		return UpdateLevelMajor
-	default:
-		return UpdateLevelNone
-	}
+	level, _ := ParseUpdateLevel(val)
+	return level
 }
 
 // DefaultVersion picks the version to select automatically, preferring

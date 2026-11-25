@@ -14,7 +14,19 @@ exclude_patterns:
   - "**/target/**"
   - "**/.venv/**"
   - "**/venv/**"
+
+autoselect_max: minor
 ```
+
+## Automatic Version Selection
+
+`autoselect_max` sets the highest update level that dcum selects automatically after checking for updates. It applies to all services:
+
+- `patch` - select patch updates only
+- `minor` - select patch or minor updates
+- `major` - select any update (default)
+
+Updates above this level are still listed and can be selected manually with Enter. The `dcum.autoselect.max` label on a service overrides this setting, so you can lower it for one service (e.g. a database) or raise it for one service when the global setting is lower. An invalid value stops dcum at startup with an error.
 
 ## Using Environment Variables
 
@@ -23,6 +35,9 @@ You can also configure dcum using environment variables with the `DCUM_` prefix:
 ```bash
 # Set exclusion patterns via environment variable
 export DCUM_EXCLUDE_PATTERNS="**/node_modules/**,**/.git/**,**/vendor/**"
+
+# Never select major updates automatically
+export DCUM_AUTOSELECT_MAX=minor
 
 # Run dcum
 ./dcum
