@@ -283,13 +283,9 @@ func (r *Root) checkUpdates(checker *registry.Checker, forceRefresh bool) {
 						r.images[idx].UpdateMinor = candidates.Minor
 						r.images[idx].UpdateMajor = candidates.Major
 
-						// Default selection priority: Patch > Minor > Major
-						if candidates.Patch != "" {
-							r.images[idx].NewVersion = candidates.Patch
-						} else if candidates.Minor != "" {
-							r.images[idx].NewVersion = candidates.Minor
-						} else if candidates.Major != "" {
-							r.images[idx].NewVersion = candidates.Major
+						maxLevel := AutoSelectMax(r.images[idx].Labels)
+						if v := DefaultVersion(candidates, maxLevel); v != "" {
+							r.images[idx].NewVersion = v
 						}
 					}
 				}
@@ -456,6 +452,11 @@ func (r *Root) refreshTable() {
 			// CheckStateDone
 			if newVerText == "" {
 				newVerText = "-"
+				// Hint that updates exist but none is selected (e.g. a major
+				// update skipped by the dcum.autoselect.max label)
+				if img.UpdatePatch != "" || img.UpdateMinor != "" || img.UpdateMajor != "" {
+					newVerText += " ↑"
+				}
 			} else {
 				isMaj := newVerText == img.UpdateMajor
 				isMin := newVerText == img.UpdateMinor

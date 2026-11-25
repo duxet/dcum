@@ -4,6 +4,8 @@ services:
   db:
     image: postgres:14.2
     container_name: my-postgres
+    labels:
+      - 'dcum.autoselect.max=minor'
   redis:
     image: redis:8.0.0-alpine
     labels:
