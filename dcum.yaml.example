@@ -17,3 +17,8 @@ exclude_patterns:
   - "**/venv/**"
   # Add your custom patterns below
   # - "**/my-custom-dir/**"
+
+# Highest update level selected automatically for all services:
+# patch, minor or major (default). Override per service with the
+# dcum.autoselect.max label.
+autoselect_max: major

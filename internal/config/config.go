@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/spf13/viper"
 )
@@ -12,6 +13,11 @@ import (
 type Config struct {
 	// ExcludePatterns is a list of glob patterns for files/directories to exclude from scanning
 	ExcludePatterns []string `mapstructure:"exclude_patterns"`
+
+	// AutoSelectMax is the highest update level (patch, minor or major) that is
+	// selected automatically for all services. The dcum.autoselect.max label
+	// overrides it per service.
+	AutoSelectMax string `mapstructure:"autoselect_max"`
 
 	// UI configuration
 	UI struct {
@@ -44,6 +50,7 @@ func Load() (*Config, error) {
 		"**/.git/**",
 		"**/vendor/**",
 	})
+	viper.SetDefault("autoselect_max", "major")
 	viper.SetDefault("ui.show_container", false)
 
 	// Allow environment variables with DCUM_ prefix
@@ -61,6 +68,13 @@ func Load() (*Config, error) {
 	var cfg Config
 	if err := viper.Unmarshal(&cfg); err != nil {
 		return nil, fmt.Errorf("error unmarshaling config: %w", err)
+	}
+
+	cfg.AutoSelectMax = strings.ToLower(strings.TrimSpace(cfg.AutoSelectMax))
+	switch cfg.AutoSelectMax {
+	case "patch", "minor", "major":
+	default:
+		return nil, fmt.Errorf("invalid autoselect_max %q: must be patch, minor or major", cfg.AutoSelectMax)
 	}
 
 	return &cfg, nil
