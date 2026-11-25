@@ -8,6 +8,9 @@ require (
 	github.com/gdamore/tcell/v2 v2.8.1
 	github.com/google/go-containerregistry v0.20.7
 	github.com/rivo/tview v0.42.1-0.20250929082832-e113793670e2
+	github.com/spf13/viper v1.21.0
+	golang.org/x/sync v0.18.0
+	gopkg.in/yaml.v3 v3.0.1
 )
 
 require (
@@ -37,13 +40,11 @@ require (
 	github.com/spf13/afero v1.15.0 // indirect
 	github.com/spf13/cast v1.10.0 // indirect
 	github.com/spf13/pflag v1.0.10 // indirect
-	github.com/spf13/viper v1.21.0 // indirect
 	github.com/subosito/gotenv v1.6.0 // indirect
 	github.com/vbatts/tar-split v0.12.2 // indirect
 	github.com/xhit/go-str2duration/v2 v2.1.0 // indirect
 	go.yaml.in/yaml/v3 v3.0.4 // indirect
 	go.yaml.in/yaml/v4 v4.0.0-rc.3 // indirect
-	golang.org/x/sync v0.18.0 // indirect
 	golang.org/x/sys v0.38.0 // indirect
 	golang.org/x/term v0.28.0 // indirect
 	golang.org/x/text v0.28.0 // indirect

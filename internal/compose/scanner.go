@@ -9,6 +9,8 @@ import (
 	"strings"
 
 	"github.com/compose-spec/compose-go/v2/cli"
+	"github.com/compose-spec/compose-go/v2/loader"
+	"gopkg.in/yaml.v3"
 )
 
 // UpdateImages updates the docker-compose files (or .env files) with new image versions.
@@ -48,7 +50,12 @@ func (s *Scanner) UpdateImages(images []ContainerImage) error {
 		strContent := string(content)
 
 		if updates[0].IsEnv {
+			seenVars := make(map[string]string)
 			for _, u := range updates {
+				if prevVal, seen := seenVars[u.EnvVarName]; seen && prevVal == u.Image.NewVersion {
+					continue
+				}
+				seenVars[u.EnvVarName] = u.Image.NewVersion
 				var updated bool
 				strContent, updated = updateEnvVar(strContent, u.EnvVarName, u.Image.NewVersion)
 				if !updated {
@@ -291,25 +298,87 @@ func splitImageAndTag(imageStr string) (name string, tag string) {
 	return imageStr, ""
 }
 
+func extractRawImagesFromYAML(path string) map[string]string {
+	content, err := os.ReadFile(path)
+	if err != nil {
+		return nil
+	}
+	var doc struct {
+		Services map[string]struct {
+			Image string `yaml:"image"`
+		} `yaml:"services"`
+	}
+	if err := yaml.Unmarshal(content, &doc); err != nil {
+		return nil
+	}
+	res := make(map[string]string)
+	for name, svc := range doc.Services {
+		if svc.Image != "" {
+			res[name] = svc.Image
+		}
+	}
+	return res
+}
+
 func parseComposeFile(path string) ([]ContainerImage, error) {
 	// 1. Load project WITH interpolation (correctly loading .env)
-	opts, err := cli.NewProjectOptions([]string{path}, cli.WithEnvFiles(), cli.WithDotEnv, cli.WithOsEnv)
+	opts, err := cli.NewProjectOptions([]string{path},
+		cli.WithEnvFiles(),
+		cli.WithDotEnv,
+		cli.WithOsEnv,
+		cli.WithConsistency(false),
+		cli.WithLoadOptions(func(o *loader.Options) {
+			o.SkipValidation = true
+			o.SkipConsistencyCheck = true
+		}),
+	)
 	if err != nil {
 		return nil, err
 	}
 
 	project, err := cli.ProjectFromOptions(context.Background(), opts)
 	if err != nil {
-		return nil, err
+		// If loading failed (e.g. missing extends file), retry with SkipExtends
+		optsRetry, errRetry := cli.NewProjectOptions([]string{path},
+			cli.WithEnvFiles(),
+			cli.WithDotEnv,
+			cli.WithOsEnv,
+			cli.WithConsistency(false),
+			cli.WithLoadOptions(func(o *loader.Options) {
+				o.SkipValidation = true
+				o.SkipConsistencyCheck = true
+				o.SkipExtends = true
+			}),
+		)
+		if errRetry == nil {
+			project, err = cli.ProjectFromOptions(context.Background(), optsRetry)
+		}
+		if err != nil {
+			return nil, err
+		}
 	}
 
 	// 2. Load project WITHOUT interpolation to find environment variable definitions in image tags
-	rawImages := make(map[string]string)
-	optsNoInt, err := cli.NewProjectOptions([]string{path}, cli.WithInterpolation(false))
+	rawImages := extractRawImagesFromYAML(path)
+	if rawImages == nil {
+		rawImages = make(map[string]string)
+	}
+
+	optsNoInt, err := cli.NewProjectOptions([]string{path},
+		cli.WithInterpolation(false),
+		cli.WithConsistency(false),
+		cli.WithLoadOptions(func(o *loader.Options) {
+			o.SkipValidation = true
+			o.SkipConsistencyCheck = true
+			o.SkipExtends = true
+		}),
+	)
 	if err == nil {
 		if projectNoInt, err := cli.ProjectFromOptions(context.Background(), optsNoInt); err == nil {
 			for _, service := range projectNoInt.Services {
-				rawImages[service.Name] = service.Image
+				if service.Image != "" {
+					rawImages[service.Name] = service.Image
+				}
 			}
 		}
 	}
@@ -338,6 +407,19 @@ func parseComposeFile(path string) ([]ContainerImage, error) {
 					if hasEnvVar(dotEnvPath, vName) {
 						envVarName = vName
 						envFilePath = dotEnvPath
+					} else {
+						// Also check env files referenced in service.EnvFiles
+						for _, envFile := range service.EnvFiles {
+							targetPath := envFile.Path
+							if !filepath.IsAbs(targetPath) {
+								targetPath = filepath.Join(filepath.Dir(path), targetPath)
+							}
+							if hasEnvVar(targetPath, vName) {
+								envVarName = vName
+								envFilePath = targetPath
+								break
+							}
+						}
 					}
 				}
 			}

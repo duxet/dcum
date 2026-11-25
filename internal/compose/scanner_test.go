@@ -3,6 +3,7 @@ package compose
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -204,3 +205,198 @@ func TestScanner_ScanAndUpdateEnvNested(t *testing.T) {
 		t.Errorf("Expected B_VERSION=2.3.0\n, got %q", string(envBytesB))
 	}
 }
+
+func TestScanner_Immich(t *testing.T) {
+	tempDir, err := os.MkdirTemp("", "dcum-immich-test")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tempDir)
+
+	composeContent := `name: immich
+
+services:
+  immich-server:
+    container_name: immich
+    image: ghcr.io/immich-app/immich-server:${IMMICH_VERSION:-release}
+    extends:
+      file: hwaccel.transcoding.yml
+      service: quicksync # set to one of [nvenc, quicksync, rkmpp, vaapi, vaapi-wsl] for accelerated transcoding
+    volumes:
+      - ${UPLOAD_LOCATION}:/usr/src/app/upload
+      - /etc/localtime:/etc/localtime:ro
+    env_file:
+      - .env
+    ports:
+      - 2283:2283
+    depends_on:
+      - redis
+      - database
+    restart: always
+    labels:
+      - 'traefik.enable=true'
+      - 'wud.tag.include=^v\d+\.\d+\.\d+$$'
+      - 'wud.link.template=https://github.com/immich-app/immich/releases/tag/v$${major}.$${minor}.$${patch}'
+
+  immich-machine-learning:
+    container_name: immich-machine-learning
+    image: ghcr.io/immich-app/immich-machine-learning:${IMMICH_VERSION:-release}
+    volumes:
+      - model-cache:/cache
+    env_file:
+      - .env
+    restart: always
+    labels:
+      - 'wud.tag.include=^v\d+\.\d+\.\d+$$'
+      - 'wud.link.template=https://github.com/immich-app/immich/releases/tag/v$${major}.$${minor}.$${patch}'
+
+  redis:
+    container_name: immich-redis
+    image: docker.io/valkey/valkey:9@sha256:4963247afc4cd33c7d3b2d2816b9f7f8eeebab148d29056c2ca4d7cbc966f2d9
+    healthcheck:
+      test: redis-cli ping || exit 1
+    restart: always
+
+  database:
+    container_name: immich-postgres
+    image: ghcr.io/immich-app/postgres:14-vectorchord0.4.3-pgvectors0.2.0@sha256:bcf63357191b76a916ae5eb93464d65c07511da41e3bf7a8416db519b40b1c23
+    environment:
+      POSTGRES_PASSWORD: ${DB_PASSWORD}
+      POSTGRES_USER: ${DB_USERNAME}
+      POSTGRES_DB: ${DB_DATABASE_NAME}
+      POSTGRES_INITDB_ARGS: '--data-checksums'
+    volumes:
+      - ${DB_DATA_LOCATION}:/var/lib/postgresql/data
+    shm_size: 128mb
+    restart: always
+    healthcheck:
+      disable: false
+
+volumes:
+  model-cache:
+`
+
+	envContent := `# The location where your uploaded files are stored
+UPLOAD_LOCATION=/data/immich/library
+# The location where your database files are stored
+DB_DATA_LOCATION=/data/immich/postgres
+
+# To set a timezone, uncomment the next line and change Etc/UTC to a TZ identifier from this list: https://en.wikipedia.org/wiki/List_of_tz_database_time_zones#List
+TZ=Europe/Warsaw
+
+# The Immich version to use. You can pin this to a specific version like "v1.71.0"
+IMMICH_VERSION=v3.2.4
+`
+
+	if err := os.WriteFile(filepath.Join(tempDir, "docker-compose.yml"), []byte(composeContent), 0644); err != nil {
+		t.Fatalf("Failed to write compose: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(tempDir, ".env"), []byte(envContent), 0644); err != nil {
+		t.Fatalf("Failed to write env: %v", err)
+	}
+
+	s := NewScanner([]string{})
+	images, err := s.Scan(tempDir)
+	if err != nil {
+		t.Fatalf("Scan failed: %v", err)
+	}
+
+	t.Logf("Found %d images: %+v", len(images), images)
+
+	for i := range images {
+		if images[i].ServiceName == "immich-server" {
+			images[i].NewVersion = "v3.3.0"
+		}
+	}
+
+	if err := s.UpdateImages(images); err != nil {
+		t.Fatalf("UpdateImages failed: %v", err)
+	}
+
+	updatedEnvBytes, err := os.ReadFile(filepath.Join(tempDir, ".env"))
+	if err != nil {
+		t.Fatalf("Failed to read updated env: %v", err)
+	}
+
+	t.Logf("Updated .env:\n%s", string(updatedEnvBytes))
+
+	if !strings.Contains(string(updatedEnvBytes), "IMMICH_VERSION=v3.3.0") {
+		t.Errorf("Expected IMMICH_VERSION=v3.3.0 in .env, but got:\n%s", string(updatedEnvBytes))
+	}
+}
+
+func TestScanner_Immich_WithExtendsFile(t *testing.T) {
+	tempDir, err := os.MkdirTemp("", "dcum-immich-hwaccel-test")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tempDir)
+
+	composeContent := `name: immich
+
+services:
+  immich-server:
+    container_name: immich
+    image: ghcr.io/immich-app/immich-server:${IMMICH_VERSION:-release}
+    extends:
+      file: hwaccel.transcoding.yml
+      service: quicksync
+    volumes:
+      - ${UPLOAD_LOCATION}:/usr/src/app/upload
+    env_file:
+      - .env
+
+  database:
+    image: postgres:14
+    volumes:
+      - ${DB_DATA_LOCATION}:/var/lib/postgresql/data
+`
+
+	envContent := `UPLOAD_LOCATION=/data/immich/library
+DB_DATA_LOCATION=/data/immich/postgres
+IMMICH_VERSION=v3.2.4
+`
+
+	hwaccelContent := `services:
+  quicksync:
+    devices:
+      - /dev/dri:/dev/dri
+`
+
+	if err := os.WriteFile(filepath.Join(tempDir, "docker-compose.yml"), []byte(composeContent), 0644); err != nil {
+		t.Fatalf("Failed to write compose: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(tempDir, "hwaccel.transcoding.yml"), []byte(hwaccelContent), 0644); err != nil {
+		t.Fatalf("Failed to write hwaccel: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(tempDir, ".env"), []byte(envContent), 0644); err != nil {
+		t.Fatalf("Failed to write env: %v", err)
+	}
+
+	s := NewScanner([]string{})
+	images, err := s.Scan(tempDir)
+	if err != nil {
+		t.Fatalf("Scan failed: %v", err)
+	}
+
+	for i := range images {
+		if images[i].ServiceName == "immich-server" {
+			images[i].NewVersion = "v3.3.0"
+		}
+	}
+
+	if err := s.UpdateImages(images); err != nil {
+		t.Fatalf("UpdateImages failed: %v", err)
+	}
+
+	updatedEnvBytes, err := os.ReadFile(filepath.Join(tempDir, ".env"))
+	if err != nil {
+		t.Fatalf("Failed to read updated env: %v", err)
+	}
+
+	if !strings.Contains(string(updatedEnvBytes), "IMMICH_VERSION=v3.3.0") {
+		t.Errorf("Expected IMMICH_VERSION=v3.3.0 in .env, but got:\n%s", string(updatedEnvBytes))
+	}
+}
+
+
